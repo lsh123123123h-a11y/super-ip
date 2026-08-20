@@ -1,0 +1,115 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: xingliu
+      POSTGRES_USER: xingliu
+      POSTGRES_PASSWORD: xingliu
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xingliu -d xingliu"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: ./backend
+    environment:
+      ENVIRONMENT: production
+      CORS_ORIGINS: http://localhost:3000
+      DATABASE_URL: postgresql+asyncpg://xingliu:xingliu@postgres:5432/xingliu
+      REDIS_URL: redis://redis:6379/0
+      DUIX_BASE_URL: ${DUIX_BASE_URL:-http://host.docker.internal:8383/easy}
+      DUIX_SHARED_DATA_ROOT: /duix-data
+      DUIX_CONTAINER_DATA_ROOT: /code/data
+      DUIX_MOCK: ${DUIX_MOCK:-false}
+    ports:
+      - "8000:8000"
+    volumes:
+      - type: bind
+        source: ${DUIX_HOST_DATA_ROOT:-./data/duix}
+        target: /duix-data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build: ./backend
+    command: python -m app.worker
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+asyncpg://xingliu:xingliu@postgres:5432/xingliu
+      REDIS_URL: redis://redis:6379/0
+      DUIX_BASE_URL: ${DUIX_BASE_URL:-http://host.docker.internal:8383/easy}
+      DUIX_SHARED_DATA_ROOT: /duix-data
+      DUIX_CONTAINER_DATA_ROOT: /code/data
+      DUIX_MOCK: ${DUIX_MOCK:-false}
+    volumes:
+      - type: bind
+        source: ${DUIX_HOST_DATA_ROOT:-./data/duix}
+        target: /duix-data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  duix-avatar-gen-video:
+    image: guiji2025/duix.avatar
+    profiles: ["duix"]
+    restart: unless-stopped
+    runtime: nvidia
+    privileged: true
+    environment:
+      PYTORCH_CUDA_ALLOC_CONF: max_split_size_mb:512
+    volumes:
+      - type: bind
+        source: ${DUIX_HOST_DATA_ROOT:-./data/duix}
+        target: /code/data
+    shm_size: 8gb
+    ports:
+      - "8383:8383"
+    command: python /code/app_local.py
+
+volumes:
+  postgres_data:
+  redis_data:

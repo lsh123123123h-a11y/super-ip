@@ -1,14 +1,17 @@
 "use client";
 
 import { useState } from "react";
+import RealVideoStudio from "./components/real-video-studio";
+import TaskCenter from "./components/task-center";
 
-type View = "studio" | "profiles" | "content" | "video" | "publish";
+type View = "studio" | "profiles" | "content" | "video" | "tasks" | "publish";
 
 const navItems: { id: View; icon: string; label: string }[] = [
   { id: "studio", icon: "⌂", label: "创作工作台" },
   { id: "profiles", icon: "◇", label: "IP 档案" },
   { id: "content", icon: "✦", label: "内容策划" },
   { id: "video", icon: "▶", label: "视频工坊" },
+  { id: "tasks", icon: "◷", label: "任务中心" },
   { id: "publish", icon: "↗", label: "发布中心" },
 ];
 
@@ -62,7 +65,8 @@ export default function Home() {
         {view === "studio" && <Studio onNavigate={setView} onCreate={() => setShowComposer(true)} />}
         {view === "profiles" && <Profiles onNotify={notify} onCreate={() => setShowComposer(true)} />}
         {view === "content" && <ContentStudio brief={brief} setBrief={setBrief} platform={platform} setPlatform={setPlatform} generating={generating} generated={generated} onGenerate={generate} onNotify={notify} />}
-        {view === "video" && <VideoStudio onNotify={notify} />}
+        {view === "video" && <RealVideoStudio onNotify={notify} onTaskCreated={() => setView("tasks")} />}
+        {view === "tasks" && <TaskCenter />}
         {view === "publish" && <PublishCenter onNotify={notify} />}
       </section>
 
@@ -76,7 +80,7 @@ function Header({ view, onCreate }: { view: View; onCreate: () => void }) {
   const titles: Record<View, [string, string]> = {
     studio: ["2026年8月20日 · 星期四", "上午好，今天想创作什么？"],
     profiles: ["内容资产 · IP POSITIONING", "IP 档案"], content: ["AI 策划引擎 · STRATEGY", "内容策划"],
-    video: ["可视化生产线 · PRODUCTION", "视频工坊"], publish: ["跨平台分发 · DISTRIBUTION", "发布中心"],
+    video: ["可视化生产线 · PRODUCTION", "视频工坊"], tasks: ["异步编排 · ORCHESTRATION", "任务中心"], publish: ["跨平台分发 · DISTRIBUTION", "发布中心"],
   };
   return <header className="topbar"><div><p>{titles[view][0]}</p><h1>{titles[view][1]}</h1></div><div className="top-actions"><button className="icon-button" aria-label="通知">○</button><button className="primary-button" onClick={onCreate}><span>＋</span>新建内容</button></div></header>;
 }
@@ -94,13 +98,7 @@ function Profiles({ onNotify, onCreate }: { onNotify: (s: string) => void; onCre
 }
 
 function ContentStudio({ brief, setBrief, platform, setPlatform, generating, generated, onGenerate, onNotify }: { brief: string; setBrief: (s: string) => void; platform: string; setPlatform: (s: string) => void; generating: boolean; generated: boolean; onGenerate: () => void; onNotify: (s: string) => void }) {
-  return <div className="module-view content-layout"><section className="prompt-panel"><span className="section-kicker">STEP 01 · 内容简报</span><h2>这次想讲什么？</h2><label>目标平台</label><div className="choice-row">{["抖音", "小红书", "视频号", "公众号"].map(p => <button className={platform === p ? "selected" : ""} key={p} onClick={() => setPlatform(p)}>{p}</button>)}</div><label htmlFor="brief">核心想法 / 产品卖点</label><textarea id="brief" value={brief} onChange={(e) => setBrief(e.target.value)} /><div className="prompt-tips"><span>✦ 已调用「AI 效率教练」档案</span><span>语气：真诚、克制、有方法</span></div><button className="generate-button" onClick={onGenerate} disabled={generating || !brief.trim()}>{generating ? <><i className="spinner" /> 正在策划内容...</> : <>生成选题与文案 <span>→</span></>}</button></section><section className="results-panel"><div className="results-head"><div><span className="section-kicker">AI 创作结果</span><h3>{generated ? `为「${platform}」生成了 3 个方向` : "等待你的内容简报"}</h3></div>{generated && <button className="ghost-button" onClick={onGenerate}>换一批</button>}</div>{!generated && !generating && <div className="empty-state"><span>✦</span><h4>从一句话开始</h4><p>AI 会结合你的 IP 档案，完成角度选择、钩子设计与脚本初稿。</p></div>}{generating && <div className="thinking"><div className="thinking-line wide" /><div className="thinking-line" /><div className="thinking-card" /><div className="thinking-card" /></div>}{generated && <div className="script-list">{scripts.map((script, index) => <article className="script-card" key={script.title}><div className="script-rank">0{index + 1}</div><div className="script-body"><div className="script-label"><span>{script.tag}</span><em>潜力分 {script.score}</em></div><h4>{script.title}</h4><p>“{script.hook}”</p><div><button onClick={() => onNotify("已复制文案到剪贴板")}>复制文案</button><button onClick={() => onNotify("已送入视频工坊")}>制作视频 →</button></div></div></article>)}</div>}</section></div>;
-}
-
-function VideoStudio({ onNotify }: { onNotify: (s: string) => void }) {
-  const [active, setActive] = useState(2);
-  const steps = ["脚本", "声音", "人物", "画面", "包装", "导出"];
-  return <div className="module-view"><section className="module-intro compact"><div><span className="section-kicker">当前项目 · AI 效率课新品发布</span><h2>口播视频制作线</h2><p>每一步都可独立调整，随时回到上一步重新生成。</p></div><button className="module-action" onClick={() => onNotify("项目已保存")}>保存项目</button></section><div className="video-workspace"><aside className="stepper">{steps.map((step, index) => <button key={step} className={index === active ? "current" : index < active ? "done" : ""} onClick={() => setActive(index)}><span>{index < active ? "✓" : index + 1}</span><div><b>{step}</b><small>{index < active ? "已完成" : index === active ? "正在编辑" : "等待处理"}</small></div></button>)}</aside><section className="preview-stage"><div className="video-canvas"><div className="canvas-light" /><div className="presenter"><span>AI</span></div><div className="caption-preview"><em>真正拖垮效率的</em><strong>不是工具少</strong></div><span className="duration">00:08 / 00:42</span></div><div className="timeline"><div className="timeline-top"><b>画面时间线</b><span>42 秒 · 9:16 竖屏</span></div><div className="track"><span>人物口播</span><i className="clip clip-one">主镜头</i></div><div className="track"><span>信息卡片</span><i className="clip clip-two">关键词弹窗</i><i className="clip clip-three">步骤清单</i></div><div className="track"><span>字幕</span><i className="clip clip-four">智能字幕 · 已校对</i></div></div></section><aside className="property-panel"><span className="section-kicker">STEP {String(active + 1).padStart(2, "0")}</span><h3>{steps[active]}设置</h3><label>视觉风格</label><button className="style-choice active"><span className="style-swatch dark" /><div><b>深色科技</b><small>蓝青高光 · 信息卡片</small></div><em>✓</em></button><button className="style-choice"><span className="style-swatch warm" /><div><b>温暖书信</b><small>纸张质感 · 柔和强调</small></div></button><label>字幕样式</label><select><option>关键词高亮</option><option>简洁双行</option><option>逐字出现</option></select><button className="generate-button small" onClick={() => onNotify(`${steps[active]}设置已应用`)}>应用并预览</button></aside></div></div>;
+  return <div className="module-view content-layout"><section className="prompt-panel"><span className="section-kicker">STEP 01 · 内容简报</span><h2>这次想讲什么？</h2><div className="field-label">目标平台</div><div className="choice-row">{["抖音", "小红书", "视频号", "公众号"].map(p => <button className={platform === p ? "selected" : ""} key={p} onClick={() => setPlatform(p)}>{p}</button>)}</div><label htmlFor="brief">核心想法 / 产品卖点</label><textarea id="brief" value={brief} onChange={(e) => setBrief(e.target.value)} /><div className="prompt-tips"><span>✦ 已调用「AI 效率教练」档案</span><span>语气：真诚、克制、有方法</span></div><button className="generate-button" onClick={onGenerate} disabled={generating || !brief.trim()}>{generating ? <><i className="spinner" /> 正在策划内容...</> : <>生成选题与文案 <span>→</span></>}</button></section><section className="results-panel"><div className="results-head"><div><span className="section-kicker">AI 创作结果</span><h3>{generated ? `为「${platform}」生成了 3 个方向` : "等待你的内容简报"}</h3></div>{generated && <button className="ghost-button" onClick={onGenerate}>换一批</button>}</div>{!generated && !generating && <div className="empty-state"><span>✦</span><h4>从一句话开始</h4><p>AI 会结合你的 IP 档案，完成角度选择、钩子设计与脚本初稿。</p></div>}{generating && <div className="thinking"><div className="thinking-line wide" /><div className="thinking-line" /><div className="thinking-card" /><div className="thinking-card" /></div>}{generated && <div className="script-list">{scripts.map((script, index) => <article className="script-card" key={script.title}><div className="script-rank">0{index + 1}</div><div className="script-body"><div className="script-label"><span>{script.tag}</span><em>潜力分 {script.score}</em></div><h4>{script.title}</h4><p>“{script.hook}”</p><div><button onClick={() => onNotify("已复制文案到剪贴板")}>复制文案</button><button onClick={() => onNotify("已送入视频工坊")}>制作视频 →</button></div></div></article>)}</div>}</section></div>;
 }
 
 function PublishCenter({ onNotify }: { onNotify: (s: string) => void }) {
@@ -110,5 +108,5 @@ function PublishCenter({ onNotify }: { onNotify: (s: string) => void }) {
 }
 
 function Composer({ onClose, onStart }: { onClose: () => void; onStart: () => void }) {
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className="composer" onMouseDown={(e) => e.stopPropagation()}><button className="modal-close" onClick={onClose}>×</button><span className="section-kicker">NEW CONTENT</span><h2>从哪种内容开始？</h2><p>选择一个起点，后续步骤仍然可以自由调整。</p><div className="composer-options"><button onClick={onStart}><span>✦</span><div><b>从一个想法开始</b><small>AI 帮你完成选题、文案与成片</small></div><em>→</em></button><button onClick={onStart}><span>↗</span><div><b>拆解对标内容</b><small>输入链接，提炼结构后原创改写</small></div><em>→</em></button><button onClick={onStart}><span>□</span><div><b>推广一个产品</b><small>围绕卖点生成完整发布方案</small></div><em>→</em></button></div></section></div>;
+  return <dialog open className="modal-backdrop" aria-labelledby="composer-title"><section className="composer"><button className="modal-close" onClick={onClose} aria-label="关闭">×</button><span className="section-kicker">NEW CONTENT</span><h2 id="composer-title">从哪种内容开始？</h2><p>选择一个起点，后续步骤仍然可以自由调整。</p><div className="composer-options"><button onClick={onStart}><span>✦</span><div><b>从一个想法开始</b><small>AI 帮你完成选题、文案与成片</small></div><em>→</em></button><button onClick={onStart}><span>↗</span><div><b>拆解对标内容</b><small>输入链接，提炼结构后原创改写</small></div><em>→</em></button><button onClick={onStart}><span>□</span><div><b>推广一个产品</b><small>围绕卖点生成完整发布方案</small></div><em>→</em></button></div></section></dialog>;
 }

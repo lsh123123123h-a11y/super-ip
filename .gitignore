@@ -15,8 +15,12 @@
 
 # next.js
 /.next/
-/.vinext/
 /out/
+
+# legacy prototype build artifacts
+/.vinext/
+/.wrangler/
+/dist/
 
 # misc
 .DS_Store
@@ -28,13 +32,20 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files
 .env*
+!.env.example
+!backend/.env.example
 
 # vercel
 .vercel
 
-/dist/
-/.wrangler/
 /outputs/
 /work/
+
+# backend
+/backend/.venv/
+**/__pycache__/
+*.py[cod]
+/.pytest_cache/
+/data/

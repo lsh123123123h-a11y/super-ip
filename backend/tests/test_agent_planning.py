@@ -1,5 +1,7 @@
 from app.schemas.agent import ProductionOrderCreate
 from app.product.digital_human_plan import build_digital_human_plan, build_intent_spec
+from app.capabilities.registry import get_capability_registry
+from app.product.registry import get_product_registry
 from app.services.agent_service import _request_hash
 
 
@@ -53,3 +55,25 @@ def test_production_order_request_hash_is_stable_and_payload_sensitive() -> None
 
     assert _request_hash(first) == _request_hash(same)
     assert _request_hash(first) != _request_hash(changed)
+
+
+def test_product_fallback_plan_only_uses_installed_execution_bindings() -> None:
+    request = make_request()
+    product = get_product_registry().require(request.product_key)
+    installed = {
+        item.key for item in get_capability_registry().installed_catalog()
+    }
+
+    plan = product.build_fallback_plan(
+        request,
+        product.build_intent(request),
+        available_capabilities=installed,
+    )
+
+    assert {step.capability for step in plan.steps}.issubset(installed)
+    assert [step.key for step in plan.steps] == [
+        "intent.normalize",
+        "script.accept_input",
+        "audio.evaluate",
+        "avatar.render",
+    ]

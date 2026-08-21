@@ -4,6 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.agent.operations import ExecutionPolicy, ExecutorDefinition
+from app.agent.contracts import CapabilityOutcome, OutcomeStatus
+from app.agent.executor import AgentExecutionResult
 from app.executors.registry import ExecutorRegistry
 
 
@@ -51,5 +53,13 @@ def test_executor_registry_separates_known_and_installed_executors() -> None:
 
     assert registry.executor("harness.example") is None
     assert {item.key for item in registry.installed_catalog()} == {"harness.installed"}
+    assert registry.select_for("content.research") == "harness.installed"
     with pytest.raises(ValueError, match="重复注册"):
         registry.register(known)
+
+
+def test_completed_executor_result_rejects_non_terminal_outcome() -> None:
+    with pytest.raises(ValidationError, match="终态"):
+        AgentExecutionResult(
+            outcome=CapabilityOutcome(status=OutcomeStatus.waiting)
+        )

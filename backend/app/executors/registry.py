@@ -2,6 +2,8 @@ from functools import lru_cache
 
 from app.agent.executor import AgentExecutorPort
 from app.agent.operations import ExecutorDefinition
+from app.core.config import get_settings
+from app.core.extensions import load_registrar_modules
 
 
 class ExecutorRegistry:
@@ -36,8 +38,22 @@ class ExecutorRegistry:
             if key in self._definitions
         ]
 
+    def select_for(self, operation_key: str) -> str | None:
+        candidates = [
+            key
+            for key, definition in self._definitions.items()
+            if key in self._executors
+            and operation_key in definition.supported_operations
+        ]
+        return sorted(candidates)[0] if candidates else None
+
 
 @lru_cache
 def get_executor_registry() -> ExecutorRegistry:
-    # Concrete Harness adapters are registered by the deployment composition root.
-    return ExecutorRegistry()
+    registry = ExecutorRegistry()
+    load_registrar_modules(
+        get_settings().extension_modules("executor"),
+        hook_name="register_executors",
+        registry=registry,
+    )
+    return registry

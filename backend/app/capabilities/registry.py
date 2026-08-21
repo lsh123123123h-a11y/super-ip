@@ -1,45 +1,130 @@
+from dataclasses import dataclass, field
 from functools import lru_cache
+from typing import Any
 
 from app.agent.contracts import CapabilityDefinition, ExecutionKind
-from app.capabilities.avatar_render import AvatarRenderCapability
 from app.capabilities.base import CapabilityHandler
-from app.capabilities.foundation import (
-    AudioEvaluateCapability,
-    ContentIngestCapability,
-    IntentNormalizeCapability,
-)
+from app.core.config import get_settings
+from app.core.extensions import load_registrar_modules
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityRegistration:
+    definition: CapabilityDefinition
+    handler: CapabilityHandler | None = None
+    executor_key: str | None = None
+    source: str = "application"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def installed(self) -> bool:
+        return self.handler is not None or self.executor_key is not None
 
 
 class CapabilityRegistry:
     def __init__(self) -> None:
-        self._definitions: dict[str, CapabilityDefinition] = {}
-        self._handlers: dict[str, CapabilityHandler] = {}
+        self._registrations: dict[str, CapabilityRegistration] = {}
 
     def register(
         self,
         definition: CapabilityDefinition,
         handler: CapabilityHandler | None = None,
+        *,
+        executor_key: str | None = None,
+        source: str = "application",
+        metadata: dict[str, Any] | None = None,
     ) -> None:
-        if definition.key in self._definitions:
+        if definition.key in self._registrations:
             raise ValueError(f"能力重复注册：{definition.key}")
-        self._definitions[definition.key] = definition
-        if handler is not None:
-            self._handlers[definition.key] = handler
+        if handler is not None and executor_key is not None:
+            raise ValueError(f"能力 {definition.key} 不能同时绑定 Handler 和 Executor")
+        if executor_key is not None and definition.execution_kind != ExecutionKind.harness:
+            raise ValueError(f"只有 harness 能力可以绑定 Executor：{definition.key}")
+        self._registrations[definition.key] = CapabilityRegistration(
+            definition=definition,
+            handler=handler,
+            executor_key=executor_key,
+            source=source,
+            metadata=metadata or {},
+        )
+
+    def bind_handler(
+        self,
+        key: str,
+        handler: CapabilityHandler,
+        *,
+        source: str | None = None,
+    ) -> None:
+        registration = self._require(key)
+        if registration.installed:
+            raise ValueError(f"能力已绑定执行入口：{key}")
+        self._registrations[key] = CapabilityRegistration(
+            definition=registration.definition,
+            handler=handler,
+            source=source or registration.source,
+            metadata=registration.metadata,
+        )
+
+    def bind_executor(
+        self,
+        key: str,
+        executor_key: str,
+        *,
+        source: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        registration = self._require(key)
+        if registration.installed:
+            raise ValueError(f"能力已绑定执行入口：{key}")
+        if registration.definition.execution_kind != ExecutionKind.harness:
+            raise ValueError(f"只有 harness 能力可以绑定 Executor：{key}")
+        self._registrations[key] = CapabilityRegistration(
+            definition=registration.definition,
+            executor_key=executor_key,
+            source=source or registration.source,
+            metadata={**registration.metadata, **(metadata or {})},
+        )
+
+    def _require(self, key: str) -> CapabilityRegistration:
+        registration = self._registrations.get(key)
+        if registration is None:
+            raise KeyError(key)
+        return registration
+
+    def resolve(self, key: str) -> CapabilityRegistration | None:
+        return self._registrations.get(key)
+
+    def is_executable(self, key: str) -> bool:
+        registration = self.resolve(key)
+        if registration is None:
+            return False
+        if registration.handler is not None:
+            return True
+        if not registration.executor_key:
+            return False
+        from app.executors.registry import get_executor_registry
+
+        return get_executor_registry().executor(registration.executor_key) is not None
 
     def definition(self, key: str) -> CapabilityDefinition | None:
-        return self._definitions.get(key)
+        registration = self.resolve(key)
+        return registration.definition if registration else None
 
     def handler(self, key: str) -> CapabilityHandler | None:
-        return self._handlers.get(key)
+        registration = self.resolve(key)
+        return registration.handler if registration else None
 
     def catalog(self) -> list[CapabilityDefinition]:
-        return [self._definitions[key] for key in sorted(self._definitions)]
+        return [
+            self._registrations[key].definition
+            for key in sorted(self._registrations)
+        ]
 
     def installed_catalog(self) -> list[CapabilityDefinition]:
         return [
-            self._definitions[key]
-            for key in sorted(self._handlers)
-            if key in self._definitions
+            self._registrations[key].definition
+            for key in sorted(self._registrations)
+            if self.is_executable(key)
         ]
 
 
@@ -64,28 +149,13 @@ def _definition(
 @lru_cache
 def get_capability_registry() -> CapabilityRegistry:
     registry = CapabilityRegistry()
-    registry.register(
-        _definition("agent.intent.normalize", "目标结构化", ExecutionKind.inline),
-        IntentNormalizeCapability(),
+    from app.capabilities.builtin import register_builtin_capabilities
+
+    register_builtin_capabilities(registry)
+    settings = get_settings()
+    load_registrar_modules(
+        settings.extension_modules("capability"),
+        hook_name="register_capabilities",
+        registry=registry,
     )
-    registry.register(
-        _definition("content.ingest", "接收已有内容", ExecutionKind.inline),
-        ContentIngestCapability(),
-    )
-    registry.register(
-        _definition("audio.evaluate", "检查已有配音", ExecutionKind.inline),
-        AudioEvaluateCapability(),
-    )
-    registry.register(
-        _definition("avatar.render", "生成数字人视频", ExecutionKind.durable, timeout_seconds=7200),
-        AvatarRenderCapability(),
-    )
-    for key, label, kind, timeout in (
-        ("content.strategy", "内容策略", ExecutionKind.harness, 600),
-        ("content.generate", "内容生成", ExecutionKind.harness, 600),
-        ("audio.prepare", "配音生成", ExecutionKind.durable, 1800),
-        ("video.compose", "视频后期合成", ExecutionKind.durable, 3600),
-        ("delivery.package", "交付包装", ExecutionKind.inline, 300),
-    ):
-        registry.register(_definition(key, label, kind, timeout_seconds=timeout))
     return registry

@@ -35,7 +35,20 @@ def build_intent_spec(payload: ProductionOrderCreate) -> AgentIntentSpec:
 def build_digital_human_plan(
     payload: ProductionOrderCreate,
     intent_spec: AgentIntentSpec,
+    *,
+    available_capabilities: set[str] | None = None,
 ) -> AgentPlanSpec:
+    available = available_capabilities if available_capabilities is not None else {
+        "agent.intent.normalize",
+        "content.ingest",
+        "content.strategy",
+        "content.generate",
+        "audio.evaluate",
+        "audio.prepare",
+        "avatar.render",
+        "video.compose",
+        "delivery.package",
+    }
     inputs = payload.inputs
     has_script = bool(inputs.get("script"))
     has_audio = bool(inputs.get("audio_asset_id") or inputs.get("audio_path"))
@@ -48,7 +61,10 @@ def build_digital_human_plan(
             evaluator="intent_completeness_v1",
         )
     ]
-    if not has_script:
+    if not has_script and {
+        "content.strategy",
+        "content.generate",
+    }.issubset(available):
         steps.extend(
             [
                 PlanStepSpec(
@@ -79,49 +95,61 @@ def build_digital_human_plan(
                 expected_artifact="script",
                 evaluator="script_quality_v1",
                 checkpoint="policy",
+                blocked_by_missing_input=not has_script,
             )
         )
         script_dependency = "script.accept_input"
 
-    audio_key = "audio.evaluate" if has_audio else "audio.prepare"
+    audio_key = (
+        "audio.prepare"
+        if not has_audio and "audio.prepare" in available
+        else "audio.evaluate"
+    )
     steps.append(
         PlanStepSpec(
             key=audio_key,
-            capability="audio.evaluate" if has_audio else "audio.prepare",
+            capability=audio_key,
             depends_on=[script_dependency],
             expected_artifact="voice_audio",
             evaluator="audio_quality_v1",
             checkpoint="policy",
+            blocked_by_missing_input=not has_audio,
         )
     )
-    steps.extend(
-        [
-            PlanStepSpec(
-                key="avatar.render",
-                capability="avatar.render",
-                depends_on=[audio_key],
-                expected_artifact="avatar_video",
-                evaluator="avatar_quality_v1",
-                checkpoint="policy",
-                blocked_by_missing_input=not has_avatar,
-            ),
+    steps.append(
+        PlanStepSpec(
+            key="avatar.render",
+            capability="avatar.render",
+            depends_on=[audio_key],
+            expected_artifact="avatar_video",
+            evaluator="avatar_quality_v1",
+            checkpoint="policy",
+            blocked_by_missing_input=not has_avatar,
+        )
+    )
+    final_dependency = "avatar.render"
+    if "video.compose" in available:
+        steps.append(
             PlanStepSpec(
                 key="video.compose",
                 capability="video.compose",
-                depends_on=["avatar.render"],
+                depends_on=[final_dependency],
                 expected_artifact="final_video",
                 evaluator="video_quality_v1",
                 checkpoint="final",
-            ),
+            )
+        )
+        final_dependency = "video.compose"
+    if "delivery.package" in available:
+        steps.append(
             PlanStepSpec(
                 key="delivery.package",
                 capability="delivery.package",
-                depends_on=["video.compose"],
+                depends_on=[final_dependency],
                 expected_artifact="delivery_package",
                 evaluator="delivery_completeness_v1",
-            ),
-        ]
-    )
+            )
+        )
     return AgentPlanSpec(
         goal=f"完成：{intent_spec.deliverable}",
         steps=steps,

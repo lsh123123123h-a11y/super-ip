@@ -34,6 +34,7 @@ class ProjectRead(ProjectCreate):
 
 class ProductionOrderCreate(BaseModel):
     project_id: str
+    product_key: str = Field(default="digital_human.video", min_length=1, max_length=100)
     title: str | None = Field(default=None, max_length=200)
     intent_text: str = Field(min_length=1, max_length=20000)
     automation_mode: AutomationMode = "key_checkpoints"
@@ -139,6 +140,7 @@ class ResolveDecisionRequest(BaseModel):
 
 
 class ProductionOrderInputsUpdate(BaseModel):
+    inputs: dict[str, Any] = Field(default_factory=dict)
     script: str | None = Field(default=None, max_length=20000)
     audio_asset_id: str | None = None
     avatar_asset_id: str | None = None

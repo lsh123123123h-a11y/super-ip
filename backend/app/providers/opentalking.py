@@ -8,6 +8,7 @@ from app.providers.base import (
     ExecutionMode,
     ProviderDescriptor,
     ProviderJobState,
+    ProviderExecutionRequest,
     ProviderStatus,
     ProviderSubmission,
 )
@@ -49,6 +50,7 @@ class OpenTalkingProvider:
             render_ready=render_ready,
             integration_state="production" if render_ready else "probe_only",
             reason=reason,
+            poll_interval_seconds=2.0,
         )
 
     async def probe(self) -> dict[str, Any]:
@@ -84,6 +86,29 @@ class OpenTalkingProvider:
         job_id = str(response.get("job_id") or response.get("id") or external_job_id)
         return ProviderSubmission(external_job_id=job_id, raw=response)
 
+    async def submit(
+        self,
+        *,
+        external_job_id: str,
+        request: ProviderExecutionRequest,
+    ) -> ProviderSubmission:
+        if request.capability != "avatar.render":
+            raise OpenTalkingProviderError(
+                f"OpenTalking 不支持能力：{request.capability}"
+            )
+        inputs = request.inputs
+        return await self.submit_render(
+            external_job_id=external_job_id,
+            request=AvatarRenderInput(
+                script=str(inputs.get("script") or ""),
+                audio_path=str(inputs["audio_path"]),
+                video_path=str(inputs["avatar_video_path"]),
+                aspect_ratio=str(inputs.get("aspect_ratio") or "9:16"),
+                quality=str(inputs.get("quality") or "720p"),
+                provider_options=request.provider_options,
+            ),
+        )
+
     async def query_render(self, external_job_id: str) -> ProviderStatus:
         path = self.settings.opentalking_render_query_path.format(job_id=external_job_id)
         payload = await self._request("GET", path)
@@ -96,12 +121,26 @@ class OpenTalkingProvider:
                 payload.get("result_url") or payload.get("result_path"),
                 payload.get("message"),
                 payload,
+                result_url=payload.get("result_url"),
+                artifact_path=payload.get("result_path"),
             )
         if raw_state in {"failed", "error", "cancelled"}:
             return ProviderStatus(ProviderJobState.failed, progress, None, payload.get("message"), payload)
         if raw_state in {"queued", "pending"}:
             return ProviderStatus(ProviderJobState.queued, progress, None, payload.get("message"), payload)
         return ProviderStatus(ProviderJobState.processing, progress, None, payload.get("message"), payload)
+
+    async def query(
+        self,
+        external_job_id: str,
+        *,
+        capability: str,
+    ) -> ProviderStatus:
+        if capability != "avatar.render":
+            raise OpenTalkingProviderError(
+                f"OpenTalking 不支持能力：{capability}"
+            )
+        return await self.query_render(external_job_id)
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         headers: dict[str, str] = {}

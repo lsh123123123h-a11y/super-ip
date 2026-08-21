@@ -4,7 +4,7 @@ from app.agent.contracts import CapabilityOutcome, DecisionSpec, OutcomeStatus
 from app.capabilities.base import CapabilityContext
 from app.models.orchestration import WorkflowRun, WorkflowStatus
 from app.schemas.workflows import DigitalHumanRenderRequest
-from app.services.workflow_service import create_workflow
+from app.services.avatar_workflow_service import create_avatar_workflow
 
 
 ACTIVE_STATUSES = {
@@ -17,12 +17,17 @@ ACTIVE_STATUSES = {
 
 class AvatarRenderCapability:
     async def execute(self, context: CapabilityContext) -> CapabilityOutcome:
+        workflow_key = (
+            f"agent:{context.run.id}:{context.step.key}:plan:{context.plan.version}:"
+            f"attempt:{context.execution_attempt}"
+        )
         workflow = await context.session.scalar(
             select(WorkflowRun)
             .where(
                 WorkflowRun.production_order_id == context.order.id,
                 WorkflowRun.plan_version_id == context.plan.id,
                 WorkflowRun.capability == context.step.capability,
+                WorkflowRun.idempotency_key == workflow_key,
             )
             .order_by(WorkflowRun.created_at.desc())
             .limit(1)
@@ -87,13 +92,11 @@ class AvatarRenderCapability:
             provider="auto",
             execution_mode="auto",
         )
-        workflow, _ = await create_workflow(
+        workflow, _ = await create_avatar_workflow(
             context.session,
             owner_id=context.order.created_by_user_id,
             tenant_id=context.order.tenant_id,
-            idempotency_key=(
-                f"agent:{context.run.id}:{context.step.capability}:plan:{context.plan.version}"
-            ),
+            idempotency_key=workflow_key,
             payload=payload,
             production_order_id=context.order.id,
             plan_version_id=context.plan.id,

@@ -80,6 +80,30 @@ def test_capability_registry_rejects_duplicate_contracts() -> None:
         registry.register(definition)
 
 
+def test_harness_binding_is_not_installed_until_executor_adapter_exists() -> None:
+    registry = CapabilityRegistry()
+    definition = CapabilityDefinition(
+        key="content.research",
+        version="1.0.0",
+        label="内容研究",
+        execution_kind=ExecutionKind.harness,
+    )
+    registry.register(definition, source="test.catalog")
+    assert registry.installed_catalog() == []
+
+    registry.bind_executor(
+        definition.key,
+        "harness.codex",
+        metadata={"allowed_tools": ["web.search"]},
+    )
+
+    registration = registry.resolve(definition.key)
+    assert registration is not None
+    assert registration.executor_key == "harness.codex"
+    assert registration.metadata["allowed_tools"] == ["web.search"]
+    assert registry.installed_catalog() == []
+
+
 def test_agent_runtime_does_not_import_workflows_providers_or_product_plugins() -> None:
     runtime_path = Path(__file__).parents[1] / "app" / "services" / "agent_runtime.py"
     tree = ast.parse(runtime_path.read_text(encoding="utf-8"))
@@ -101,3 +125,27 @@ def test_agent_runtime_does_not_import_workflows_providers_or_product_plugins() 
         for prefix in forbidden_prefixes
     )
     assert "avatar.render" not in runtime_path.read_text(encoding="utf-8")
+
+
+def test_generic_worker_does_not_contain_domain_or_provider_state_machine() -> None:
+    worker_path = Path(__file__).parents[1] / "app" / "worker.py"
+    source = worker_path.read_text(encoding="utf-8").lower()
+
+    assert "avatar" not in source
+    assert "duix" not in source
+    assert "providerjob" not in source
+
+
+def test_generic_registries_and_workflow_service_do_not_import_avatar_plugins() -> None:
+    app_root = Path(__file__).parents[1] / "app"
+    targets = [
+        app_root / "services" / "workflow_service.py",
+        app_root / "services" / "provider_registry.py",
+        app_root / "product" / "planning.py",
+    ]
+    for target in targets:
+        source = target.read_text(encoding="utf-8").lower()
+        assert "app.providers.duix" not in source
+        assert "app.providers.opentalking" not in source
+        assert "digital_human_plan" not in source
+        assert "avatar_render" not in source

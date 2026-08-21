@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     max_workflow_attempts: int = 3
     avatar_provider_order: str = "duix,opentalking"
     avatar_route_policy_version: str = "avatar-route-v1"
+    capability_extension_modules: str = ""
+    evaluator_extension_modules: str = ""
+    workflow_extension_modules: str = ""
+    provider_extension_modules: str = ""
+    executor_extension_modules: str = ""
+    product_extension_modules: str = ""
 
     model_gateway_base_url: str = ""
     model_gateway_api_key: str = ""
@@ -62,6 +68,10 @@ class Settings(BaseSettings):
     def avatar_provider_priority(self) -> list[str]:
         providers = [item.strip().lower() for item in self.avatar_provider_order.split(",") if item.strip()]
         return providers or ["duix"]
+
+    def extension_modules(self, kind: str) -> list[str]:
+        raw = getattr(self, f"{kind}_extension_modules", "")
+        return [item.strip() for item in raw.split(",") if item.strip()]
 
     @property
     def model_gateway_configured(self) -> bool:

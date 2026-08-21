@@ -15,6 +15,8 @@ class CapabilityContext:
     plan: PlanVersion
     step: PlanStepSpec
     inputs: dict[str, Any]
+    execution_attempt: int = 1
+    evaluation_feedback: list[dict[str, Any]] | None = None
 
 
 class CapabilityHandler(Protocol):

@@ -7,7 +7,8 @@ from app.core.database import get_session
 from app.core.principal import Principal, get_principal
 from app.models.orchestration import WorkflowStatus
 from app.schemas.workflows import DigitalHumanRenderRequest, WorkflowRead
-from app.services.workflow_service import create_workflow, get_workflow, list_workflows, retry_workflow
+from app.services.avatar_workflow_service import create_avatar_workflow
+from app.services.workflow_service import get_workflow, list_workflows, retry_workflow
 from app.services.provider_registry import ProviderRoutingError
 from app.services.identity_service import ensure_principal_records
 
@@ -24,7 +25,7 @@ async def submit_digital_human_workflow(
 ) -> WorkflowRead:
     await ensure_principal_records(session, principal)
     try:
-        workflow, created = await create_workflow(
+        workflow, created = await create_avatar_workflow(
             session,
             owner_id=principal.user_id,
             tenant_id=principal.tenant_id,

@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-21：通用能力、Workflow 插件与评价返工闭环
+
+- 目标：保留现有 Agent Runtime、ProductionOrder、PlanVersion、AgentOperation、WorkflowRun、Outbox、Lease 等可靠骨架，移除会随新能力增加而持续恶化的数字人默认前提。
+- 实际修改：Capability Registry 分离目录与 Handler/Executor 绑定，新增统一 Capability Dispatcher 和标准 Harness 终态结果；Product、Capability、Evaluator、Workflow、Provider、Executor 支持显式扩展模块注册；通用 Worker 从 518 行缩减为纯分发/恢复职责，数字人状态机迁入 `digital_human.render` Workflow 插件；Provider Registry 改为 capability 维度路由与策略注册；Runtime 真正写入 QualityEvaluation，并实现 accept、自动 rework、自动 replan、达到上限转人工；模板规划只引用已安装执行入口，避免静态 capability key 进入不可执行计划。
+- 验证结果：Python 编译通过；隔离 PostgreSQL 全量迁移后 39 项后端测试通过，覆盖数字人完整成功链、评价失败后同一步骤返工、Harness capability 经 AgentOperation 执行并回到统一评价链；前端 ESLint、Next.js 生产构建和 Compose 配置检查通过；隔离测试数据库已删除；API、Worker 已使用新镜像重建，健康接口与通用 Provider 目录返回正常。
+- 遗留风险：尚未接入真实 Codex/Hermes/Harness Adapter，当前只验证了稳定端口和测试 Adapter；内置评价器目前是确定性产物合同门禁，内容/画面质量仍需领域 evaluator；扩展注册是部署时 Python module registrar，尚未建设租户级动态安装、签名和沙箱；OIDC/RBAC/RLS、对象存储、计费价格表、配额与长期知识仍未进入本阶段。
+- 可复用经验：新增能力必须同时声明定义、真实执行绑定和 evaluator；新增可靠长流程以 Workflow 插件注册，不向 Worker 添加业务分支；Provider 只负责 capability 执行归一化，不拥有生产单状态；目录中“已知”不等于运行时“已安装”。
+
 ## 2026-08-21：异步 AgentOperation 控制面
 
 - 目标：让云大脑与后续 Harness 成为可恢复的 SaaS 后台任务，而不是阻塞 API 的同步调用或各自维护一套状态机。

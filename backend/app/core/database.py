@@ -21,7 +21,7 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def create_schema() -> None:
-    from app.models import orchestration  # noqa: F401
+    from app import models  # noqa: F401
 
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)

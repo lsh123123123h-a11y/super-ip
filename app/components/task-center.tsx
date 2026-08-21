@@ -3,13 +3,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { listWorkflows, providerAssetUrl, retryWorkflow, Workflow } from "../lib/api";
 
-const statusLabel: Record<Workflow["status"], string> = {
+const baseStatusLabel: Record<Workflow["status"], string> = {
   queued: "排队中",
   running: "处理中",
-  waiting_provider: "Duix 渲染中",
+  waiting_provider: "数字人渲染中",
+  retry_wait: "等待重试",
+  paused: "已暂停",
+  canceling: "正在取消",
+  canceled: "已取消",
   succeeded: "已完成",
   failed_retryable: "可重试",
   failed_final: "失败",
+  manual_intervention: "需要人工介入",
   cancelled: "已取消",
 };
 
@@ -57,21 +62,21 @@ export default function TaskCenter() {
         <div>
           <span className="section-kicker">ASYNC WORKFLOWS</span>
           <h2>任务中心</h2>
-          <p>查看排队、Duix 渲染和结果保存的真实进度。</p>
+          <p>查看排队、执行、重试和结果保存的真实进度。</p>
         </div>
         <button className="module-action" onClick={() => void refresh()}>刷新状态</button>
       </section>
 
       {error && <div className="task-error">后端暂不可用：{error}</div>}
       {loading && <div className="task-empty">正在读取任务…</div>}
-      {!loading && !items.length && <div className="task-empty">还没有任务，先去视频工坊提交第一条数字人口播。</div>}
+      {!loading && !items.length && <div className="task-empty">还没有执行任务，先向 Agent 提交一个交付目标。</div>}
 
       <section className="task-list">
         {items.map((workflow) => (
           <article className="task-card" key={workflow.id}>
             <div className="task-card-head">
               <div><span>{workflow.input_payload.quality} · {workflow.input_payload.aspect_ratio}</span><h3>{workflow.input_payload.title || workflow.input_payload.script.slice(0, 32)}</h3></div>
-              <b className={`task-status ${workflow.status}`}>{statusLabel[workflow.status]}</b>
+              <b className={`task-status ${workflow.status}`}>{baseStatusLabel[workflow.status]}</b>
             </div>
             <div className="task-progress"><i style={{ width: `${workflow.progress}%` }} /></div>
             <div className="task-steps">
@@ -85,7 +90,7 @@ export default function TaskCenter() {
               {workflow.status === "succeeded" && typeof workflow.output_payload?.artifact_path === "string" && <a href={providerAssetUrl(workflow.output_payload.artifact_path)} target="_blank" rel="noreferrer">下载成片</a>}
               {workflow.status === "succeeded" && typeof workflow.output_payload?.result_url === "string" && <a href={workflow.output_payload.result_url} target="_blank" rel="noreferrer">打开成片</a>}
             </div>
-            <footer><code>{workflow.id}</code><time>{new Date(workflow.created_at).toLocaleString("zh-CN")}</time></footer>
+            <footer><span>生产任务</span><time>{new Date(workflow.created_at).toLocaleString("zh-CN")}</time></footer>
           </article>
         ))}
       </section>

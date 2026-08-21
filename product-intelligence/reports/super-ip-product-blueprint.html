@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>超级 IP 营销智能体：竞品、管理端与混合模型网关产品蓝图</title>
+  <style>
+    :root{--ink:#172033;--muted:#64748b;--line:#dbe3ef;--paper:#fff;--wash:#f5f7fb;--accent:#2457d6;--accent2:#7047eb;--good:#13795b;--warn:#a05a00;--bad:#b42318}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--wash);color:var(--ink);font:16px/1.72 system-ui,-apple-system,"Segoe UI","PingFang SC",sans-serif}
+    main{max-width:1180px;margin:32px auto;background:var(--paper);padding:56px 64px;box-shadow:0 12px 40px #1e293b14}
+    header{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:36px}h1{font-size:42px;line-height:1.15;margin:0 0 12px}h2{margin-top:48px;border-top:1px solid var(--line);padding-top:30px}h3{margin-top:30px}.meta{color:var(--muted)}
+    .hero{background:linear-gradient(135deg,#edf3ff,#f7f2ff);border-left:5px solid var(--accent);padding:24px 28px;margin:28px 0}.hero strong{font-size:20px}.badge{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:2px 10px;margin:4px 6px 4px 0;font-size:13px}.high{color:var(--good)}.medium{color:var(--warn)}.low{color:var(--bad)}
+    .gate,.decision,.callout{border:1px solid var(--line);border-radius:10px;padding:18px 22px;margin:20px 0}.gate{background:#f8fafc}.decision{border-left:5px solid var(--accent)}.callout{background:#fcfcff}.warn{border-left:5px solid var(--warn)}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.card{border:1px solid var(--line);border-radius:12px;padding:20px}.card h3{margin:0 0 8px}.number{font-size:32px;font-weight:750;color:var(--accent)}
+    table{border-collapse:collapse;width:100%;display:block;overflow:auto;margin:20px 0}th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top;min-width:118px}th{background:#eef3fa}.recommended{background:#f2f7ff}
+    a{color:var(--accent)}code,pre{background:#f1f5f9;border-radius:6px}code{padding:2px 5px}pre{padding:16px;overflow:auto;white-space:pre-wrap}.source{font-size:14px;color:var(--muted)}ul,ol{padding-left:24px}.flow{font-size:15px;line-height:1.55}.yes{color:var(--good);font-weight:650}.no{color:var(--bad);font-weight:650}
+    @media(max-width:760px){main{margin:0;padding:28px 20px}h1{font-size:32px}.grid{grid-template-columns:1fr}}
+    @media print{body{background:#fff}main{box-shadow:none;margin:0;max-width:none;padding:0}a{color:inherit;text-decoration:none}.card{break-inside:avoid}}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>超级 IP 营销智能体产品蓝图</h1>
+      <div class="meta">三款竞品 × 管理端 × New API × 数字人混合执行编排｜研究截至 2026-08-20｜中国市场｜Deep 模式｜v0.2</div>
+    </header>
+
+    <section class="hero">
+      <strong>推荐：把 ip-ai 重构为“营销活动驱动的内容生产操作系统”。</strong>
+      <p>当前问题不是页面数量不足，而是 IP、脚本、数字人、任务、费用和发布互不认识。轻语 IP 全能力作为功能等价目标；通用 AI 默认走云 API，数字人视频允许 Duix/OpenTalking 通过本地、自托管或云 API Worker 执行。New API 承接通用云模型渠道，自有编排层统一任务、素材、路由、进度、失败恢复、成本和产物。</p>
+      <span class="badge high">竞品骨架：高置信度</span><span class="badge high">技术边界：高置信度</span><span class="badge medium">活动优先交互：待原型验证</span><span class="badge low">价格与付费意愿：证据不足</span>
+    </section>
+
+    <section class="gate"><strong>阶段与质量门</strong>　已完成竞品、当前源码、New API、Duix/OpenTalking、发布平台和合规研究。当前处于 S4 决策门；活动/项目主线、管理端、编排层、数字人混合执行、轻语全能力等价目标以及双引擎顺序已确认，仅首版发布边界待确认。尚未开始大规模改代码。</section>
+
+    <h2>1. 一句话诊断</h2>
+    <p>现有 ip-ai 更像“六个 AI 功能页的 SaaS 外壳”：Duix 上传、渲染和任务是唯一真实闭环，内容策划、作品、发布等页面缺乏共同业务对象和生产状态。生产级产品需要以下事实链：</p>
+    <pre class="flow">Tenant / Workspace
+  └─ IP / Brand
+      └─ Campaign
+          └─ Content Project
+              ├─ Brief / Script / Storyboard versions
+              ├─ Assets / Avatar / Voice / Consent
+              ├─ Workflow Run / Step / Provider Job
+              ├─ Deliverable versions / Review
+              └─ Publish Record / Performance Signal</pre>
+    <p>数字人是媒体生产中的能力节点，不是产品全部。任何页面和模型调用都应落到稳定业务对象；任何异步能力都应通过可恢复工作流；任何费用变化都应进入不可变账本；任何人脸和声音产物都应关联授权快照。</p>
+
+    <h2>2. 三款竞品：真正值得学的部分</h2>
+    <table>
+      <thead><tr><th>产品</th><th>核心交互</th><th>强项</th><th>不应照搬</th><th>对 ip-ai 的启发</th></tr></thead>
+      <tbody>
+        <tr><td><strong>营销获客智能体 7.0</strong></td><td>选择 IP → 生成文案 → 文案 → 配音 → 数字人 → 智能剪辑 → 标题封面 → 发布</td><td>步骤完成条件、锁定、草稿恢复、从对标链接到改写</td><td>单条视频线性向导不适合管理长期 IP、活动和团队</td><td>借鉴“清晰步骤＋可编辑中间结果＋断点恢复”</td></tr>
+        <tr><td><strong>亿万流量智能体</strong></td><td>工作台承接自然语言意图，再路由至工具；所有生成统一进入异步任务</td><td>任务、积分、退款、重渲染、历史作品、管理后台和商业运营</td><td>大量智能体/工具入口容易形成能力超市，用户仍需自己编排</td><td>借鉴任务事实、账本、退款、客服与 Admin 控制面</td></tr>
+        <tr><td><strong>轻语 IP</strong></td><td>固定流程区＋参数区＋状态区；自动跑完与手工精调并存</td><td>IP 大脑、素材库、云/本地节点级切换、剪辑包装、多账号发布</td><td>重型本地桌面依赖和无人值守发布会带来升级、风控和支持成本</td><td>借鉴本地生产节点、素材复用、能力节点选择和强工作流</td></tr>
+      </tbody>
+    </table>
+    <p>共同的生产门槛不是“有多少模型”，而是：完整链路、可编辑中间结果、资产复用、长任务恢复、费用可解释和发布可交付。竞品事实来自本地程序资源的只读分析与公开版本核验；未执行竞品页面中的安装命令或自动发布操作。</p>
+
+    <h2>3. 推荐的用户端</h2>
+    <div class="grid">
+      <div class="card"><h3>1. 今日工作台</h3><p>待做、待审核、失败、即将发布、活动进度和真实消耗；不是摆放虚构数据的仪表盘。</p></div>
+      <div class="card"><h3>2. IP 大脑</h3><p>身份、人群、Offer、证据库、语气、禁区、平台策略与版本，成为所有内容生成的上下文来源。</p></div>
+      <div class="card"><h3>3. 营销活动</h3><p>目标、主题、渠道、节奏、KPI、预算和内容项目列表，回答“为什么做这些内容”。</p></div>
+      <div class="card"><h3>4. 内容工作室</h3><p>支持想法、对标、产品资料和已有文案起步；管理选题池、脚本版本、平台变体与审核。</p></div>
+      <div class="card"><h3>5. 数字人工作室</h3><p>配音、形象、Duix、字幕、BGM、画中画、封面与审片；每一步可保存、重跑和替换。</p></div>
+      <div class="card"><h3>6. 资产中心</h3><p>素材、声音、形象、模板、脚本、作品和授权；区分可复用资产与单项目产物。</p></div>
+      <div class="card"><h3>7. 任务中心</h3><p>跨能力步骤、进度、成本、异常、重试、取消和人工介入；用户看到可解释状态。</p></div>
+      <div class="card"><h3>8. 发布与复盘</h3><p>账号、平台适配、发布记录、审核状态和可获得的效果数据，回流至活动与选题。</p></div>
+    </div>
+    <div class="callout"><strong>交互关键：</strong>保留“快速成片”作为首页捷径，让新用户像竞品向导一样快速完成第一条视频；后台自动建立最小 Campaign/Project，避免产生无归属的脚本、声音和成片。</div>
+
+    <h2>4. 必须建设的管理端</h2>
+    <table>
+      <thead><tr><th>模块</th><th>生产级职责</th><th>首期最低能力</th></tr></thead>
+      <tbody>
+        <tr><td>租户、用户与 RBAC</td><td>团队隔离、角色权限、状态和审计</td><td>Owner / Admin / Editor / Reviewer；租户级数据边界</td></tr>
+        <tr><td>套餐与账本</td><td>额度预占、实扣、释放、退款、人工调整</td><td>不可变流水；每笔费用能回查业务任务与 Provider 任务</td></tr>
+        <tr><td>能力与通道</td><td>Capability、Provider、Key、模型映射、价格、健康、灰度</td><td>密钥不下发前端；启停、限流、价格和健康状态可配置</td></tr>
+        <tr><td>路由策略</td><td>按租户、授权、素材、质量、成本、时延、地域和健康选择数字人引擎与执行位置</td><td>主通道、回退链、决策日志与策略版本</td></tr>
+        <tr><td>数字人/媒体 Worker</td><td>安全连接 Duix/OpenTalking 本地或自托管渲染服务</td><td>节点身份、能力声明、引擎版本、队列、心跳、维护模式</td></tr>
+        <tr><td>任务运维</td><td>处理卡住、失败、重复回调和供应商异常</td><td>步骤详情、取消、重试、补偿、死信、人工接管</td></tr>
+        <tr><td>成本与经营</td><td>同时看供应商成本、用户扣费、退款和毛利</td><td>按能力/Provider/租户归集；预估与实际成本偏差</td></tr>
+        <tr><td>资产、授权与合规</td><td>人脸、声音、素材的授权、到期、撤回、删除和留存</td><td>Consent 快照、AI 标识、投诉/删除请求、违规冻结</td></tr>
+        <tr><td>配置与审计</td><td>Prompt、工作流、模板、功能开关和高风险操作追踪</td><td>版本、灰度、回滚；管理员行为不可抵赖</td></tr>
+      </tbody>
+    </table>
+    <p>管理端应是独立权限边界和路由/子域。早期可与用户端同仓以降低开发成本，但不能复用普通用户会话绕过 RBAC，也不能让 New API 直接承担你的租户、订单或余额。</p>
+
+    <h2>5. New API 与数字人混合执行：编排层怎么设计</h2>
+    <pre class="flow">用户端 / 管理端
+       ↓
+Business API / Workflow
+（业务对象、版本、状态、账本、授权、审计）
+       ↓
+Capability Gateway
+（统一合同、策略、路由、回退、计量、幂等）
+       ├──────────────→ New API → 通用云模型渠道
+       ├──────────────→ Avatar/Media Job Router
+       │                  ├─ Duix 本地/自托管 Worker 或云 API
+       │                  └─ OpenTalking 自托管 Worker/远程推理
+       └──────────────→ 视频包装 / 发布平台专用 Adapter</pre>
+    <h3>内部只暴露业务能力，不暴露供应商</h3>
+    <p><code>text.generate</code>、<code>text.embed</code>、<code>image.generate</code>、<code>asr.transcribe</code>、<code>speech.synthesize</code>、<code>voice.clone</code>、<code>avatar.render</code>、<code>avatar.video_clone</code>、<code>avatar.session.realtime</code>、<code>video.compose</code>、<code>publish.content</code>。</p>
+    <p>每次路由必须记录候选 Provider、排除原因、最终选择、执行位置、回退、策略版本、估算/实际成本和时延。这样切换 Duix、OpenTalking 或云供应商时，业务对象、前端流程和历史数据不会被供应商字段污染。</p>
+    <h3>New API 的正确边界</h3>
+    <p><span class="yes">适合：</span>通用云模型渠道、模型映射、Key 管理、优先级/权重、失败重试、限流、日志与基础计费。<span class="no">不适合：</span>替代你的 Tenant、Campaign、Project、数字人授权、长任务补偿、人工审片、发布记录和业务账本。官方资料显示它已覆盖渠道与多媒体/异步能力，但这并不等于它理解超级 IP 业务对象。参见 <a href="https://github.com/QuantumNous/new-api">New API 官方仓库</a>与<a href="https://docs.newapi.ai/en/docs/guide/feature-guide">功能指南</a>。</p>
+    <h3>本地数字人不是“填一个 localhost 地址”</h3>
+    <p>浏览器和云端 SaaS 无法可靠、安全地直接调用客户机器的 localhost。Duix/OpenTalking Worker 应主动连接控制面，声明硬件、引擎版本和能力，使用短期任务凭证拉取获授权素材并回传进度与产物；节点掉线、版本不兼容、模型缺失和磁盘不足都要成为可观察状态。当前不把通用本地 LLM 平台列入产品范围。</p>
+
+    <h2>6. Duix 与 OpenTalking 的产品定位</h2>
+    <table>
+      <thead><tr><th>能力</th><th>适合的用户任务</th><th>当前决策</th></tr></thead>
+      <tbody>
+        <tr><td><a href="https://github.com/duixcom/Duix-Avatar">Duix Avatar</a> / <a href="https://docs.duix.com/documentation/introduction">云 API</a></td><td>音频/文本驱动的视频合成；可本地、自托管或使用商业云路径</td><td class="recommended"><strong>Phase 1 主生产闭环</strong>，纳入 <code>avatar.render</code></td></tr>
+        <tr><td><a href="https://github.com/datascale-ai/opentalking">OpenTalking</a></td><td>实时会话、音频/文本驱动视频创建和视频克隆；可插拔模型编排</td><td><strong>Phase 2 合同级 Spike</strong>，验证后作为第二引擎及 <code>avatar.video_clone</code>/<code>avatar.session.realtime</code> 扩展</td></tr>
+      </tbody>
+    </table>
+    <p>两者都能参与数字人视频，但产品角色仍不同：Duix 已有现成适配基础和商业 API 路径；OpenTalking 是更宽的可插拔编排框架，最新版已覆盖视频创建/克隆，但需要验证具体后端、部署、成本、质量和 SLA。推荐统一合同、分期接入，而不是在业务代码里做两套流程。</p>
+
+    <h2>7. 生产级 MVP 与路线图</h2>
+    <div class="callout"><strong>MVP 验收不是“页面能点”。</strong>一个真实团队应能连续完成 10 个项目：创建工作空间 → 建 IP/授权资产 → 建最小活动/项目 → 生成和编辑脚本 → 配音 → Duix → 字幕/BGM/封面 → 审核 → 下载发布包 → 查看任务与实际消耗。</div>
+    <table>
+      <thead><tr><th>阶段</th><th>目标</th><th>核心交付</th><th>通过标准</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Phase 1<br>0–6 周</strong></td><td>事实来源与 Duix 生产闭环</td><td>Tenant/RBAC；IP/Campaign/Project/Asset/Consent；可恢复工作流；Duix 成片；账本；最小 Admin</td><td>10 个真实项目成功率 ≥90%；单项目人工介入 &lt;15 分钟</td></tr>
+        <tr><td><strong>Phase 2<br>6–10 周</strong></td><td>数字人双引擎编排</td><td>Capability Catalog；Provider SDK；New API；OpenTalking Spike；媒体 Worker；路由、回退、计量、成本</td><td>同一组 10 个任务切换引擎不改业务对象；状态/成本/产物完整</td></tr>
+        <tr><td><strong>Phase 3<br>10–14 周</strong></td><td>量产与发布闭环</td><td>素材检索；包装模板；批量与审核；抖音官方发布；其他平台发布包；基础效果回流</td><td>30 个发布任务完成 ≥90%；零账号风控事故</td></tr>
+      </tbody>
+    </table>
+    <p>首版明确不做：30+ 独立智能体商店、把 OpenTalking 实时会话塞入主流程、通用本地 LLM 平台、全平台浏览器无人值守发布、OEM/复杂分销，以及“无限生成”“10 秒成片”等系统无法保证的承诺。</p>
+
+    <h2>8. 发布与合规边界</h2>
+    <ul>
+      <li>抖音优先走官方内容发布能力，并将授权范围、审核和失败原因写入 Publish Record。参见<a href="https://open.douyin.com/platform/resource/docs/ability/content-management/douyin-publish-solution/">抖音开放平台</a>。</li>
+      <li>小红书官方分享开放平台偏 App 内调起分享/发布，不应把它等同于无人值守网页自动化。首版采用发布包或受控调起。参见<a href="https://agora.xiaohongshu.com/">小红书分享开放平台</a>。</li>
+      <li>面向公众提供生成式文本、图片、音频和视频服务，需要从底层支持内容安全、生成标识、投诉与处置。参见<a href="https://www.cac.gov.cn/2023-07/13/c_1690898327029107.htm">《生成式人工智能服务管理暂行办法》</a>。</li>
+      <li>人脸和声纹应按敏感个人信息风险设计授权、用途范围、到期、撤回、删除和审计。参见<a href="https://www.samr.gov.cn/wljys/gzzd/art/2023/art_3ef1e889c1e644d4b65b5f5c7f432386.html">《个人信息保护法》</a>。</li>
+    </ul>
+
+    <h2>9. 主要风险与反证</h2>
+    <table>
+      <thead><tr><th>失败方式</th><th>早期信号</th><th>控制办法</th></tr></thead>
+      <tbody>
+        <tr><td>再次做成页面 Demo</td><td>页面增加，但真实项目仍不能贯通</td><td>每项功能必须落业务对象、状态和验收指标</td></tr>
+        <tr><td>数字人混合执行复杂度失控</td><td>Worker 失联、引擎版本漂移、素材传输失败、支持工单上涨</td><td>只把数字人/媒体纳入 Worker；能力声明；严格兼容矩阵与回退链</td></tr>
+        <tr><td>Duix 产出不稳定</td><td>口型、远景、输入素材导致高返工</td><td>素材质量门、样本基准、任务可重跑；达不到 Kill 标准则缩小场景</td></tr>
+        <tr><td>任务与账本不一致</td><td>重复扣费、失败未退款、对账差异</td><td>幂等、不可变流水、预占/实扣/释放、补偿任务</td></tr>
+        <tr><td>发布引发账号风险</td><td>授权失效、验证码、平台处罚</td><td>官方 API 优先；首版保留人工确认；不承诺全自动</td></tr>
+        <tr><td>Campaign 模型对新手过重</td><td>不知道从哪里开始、首条内容耗时变长</td><td>默认快速成片入口；8–12 人原型对照后再定导航</td></tr>
+      </tbody>
+    </table>
+    <p>反证也必须保留：New API 已支持多媒体和异步任务，自有双层网关会增加运维复杂度，必须用 Provider 替换实验证明收益；公开用户评价样本很少，不能据此推断付费意愿、留存或具体套餐价格。</p>
+
+    <section class="decision">
+      <h2>10. 待确认与已确认决策</h2>
+      <p><strong>已确认：</strong>独立 SaaS；活动/项目主线＋快速成片；独立管理端边界；自有编排与 Capability Gateway；通用 AI 云优先、数字人视频允许混合执行；轻语 IP 全能力功能等价目标；Duix 主生产、OpenTalking 同期 Spike 后作为第二引擎。</p>
+      <ol>
+        <li><strong>D-006：</strong>发布以官方能力优先；小红书/视频号首版采用导出包或调起发布。</li>
+      </ol>
+      <p>发布边界确认后，进入详细 PRD、数据模型、编排状态机、Provider/Worker 协议和 Phase 1 实现；现在不应继续堆静态页面。</p>
+    </section>
+
+    <section class="source">
+      <h2>来源与证据</h2>
+      <p>核心一手来源：当前 ip-ai 源码与三款本地程序的只读走查；<a href="https://luogen.youqu-ai.top/">营销获客官方页</a>、<a href="https://shicaopaiai.com/register">亿万流量官方页</a>、<a href="https://www.qingyu.club/products/ip">轻语官方页</a>；<a href="https://github.com/QuantumNous/new-api">New API</a>、<a href="https://github.com/duixcom/Duix-Avatar">Duix</a>、<a href="https://docs.duix.com/documentation/introduction">Duix 云 API</a>、<a href="https://github.com/datascale-ai/opentalking">OpenTalking</a>官方资料；国家法规与平台开放文档。</p>
+      <p>完整证据账本、主张、反证、假设、决策和需求位于同一研究工作区。本报告不把厂商营销口径当效果证明，也不根据少量商店评价推断市场总体。</p>
+    </section>
+  </main>
+</body>
+</html>

@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from app.core.config import Settings
-from app.providers.base import ProviderJobState
+from app.providers.base import AvatarRenderInput, ProviderJobState
 from app.providers.duix import DuixProvider
 
 
@@ -23,8 +23,14 @@ async def test_duix_submit_and_success_mapping() -> None:
         provider = DuixProvider(Settings(), client)
         submission = await provider.submit_render(
             external_job_id="job-1",
-            audio_path="/code/data/a.wav",
-            video_path="/code/data/v.mp4",
+            request=AvatarRenderInput(
+                script="hello",
+                audio_path="/code/data/a.wav",
+                video_path="/code/data/v.mp4",
+                aspect_ratio="9:16",
+                quality="720p",
+                provider_options={},
+            ),
         )
         status = await provider.query_render(submission.external_job_id)
 

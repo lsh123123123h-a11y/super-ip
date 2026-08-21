@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import assets, health, providers, workflows
+from app.api.routes import agent, assets, business, health, providers, workflows
 from app.core.config import get_settings
 from app.core.database import create_schema
 
@@ -12,7 +12,8 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await create_schema()
+    if settings.auto_create_schema:
+        await create_schema()
     yield
 
 
@@ -26,6 +27,8 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(agent.router, prefix=settings.api_prefix)
 app.include_router(assets.router, prefix=settings.api_prefix)
+app.include_router(business.router, prefix=settings.api_prefix)
 app.include_router(providers.router, prefix=settings.api_prefix)
 app.include_router(workflows.router, prefix=settings.api_prefix)

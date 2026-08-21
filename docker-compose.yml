@@ -24,6 +24,16 @@ services:
       timeout: 3s
       retries: 20
 
+  migrate:
+    build: ./backend
+    command: alembic upgrade head
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+asyncpg://xingliu:xingliu@postgres:5432/xingliu
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build: ./backend
     environment:
@@ -31,10 +41,23 @@ services:
       CORS_ORIGINS: http://localhost:3000
       DATABASE_URL: postgresql+asyncpg://xingliu:xingliu@postgres:5432/xingliu
       REDIS_URL: redis://redis:6379/0
+      AVATAR_PROVIDER_ORDER: ${AVATAR_PROVIDER_ORDER:-duix,opentalking}
+      AVATAR_ROUTE_POLICY_VERSION: ${AVATAR_ROUTE_POLICY_VERSION:-avatar-route-v1}
       DUIX_BASE_URL: ${DUIX_BASE_URL:-http://host.docker.internal:8383/easy}
       DUIX_SHARED_DATA_ROOT: /duix-data
       DUIX_CONTAINER_DATA_ROOT: /code/data
       DUIX_MOCK: ${DUIX_MOCK:-false}
+      OPENTALKING_BASE_URL: ${OPENTALKING_BASE_URL:-}
+      OPENTALKING_API_KEY: ${OPENTALKING_API_KEY:-}
+      OPENTALKING_RENDER_ENABLED: ${OPENTALKING_RENDER_ENABLED:-false}
+      MODEL_GATEWAY_BASE_URL: ${MODEL_GATEWAY_BASE_URL:-}
+      MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY:-}
+      MODEL_GATEWAY_DEFAULT_MODEL: ${MODEL_GATEWAY_DEFAULT_MODEL:-}
+      MODEL_GATEWAY_TIMEOUT_SECONDS: ${MODEL_GATEWAY_TIMEOUT_SECONDS:-120}
+      AGENT_OPERATION_LEASE_SECONDS: ${AGENT_OPERATION_LEASE_SECONDS:-180}
+      AGENT_OPERATION_RETRY_BASE_SECONDS: ${AGENT_OPERATION_RETRY_BASE_SECONDS:-10}
+      PLANNING_TIMEOUT_SECONDS: ${PLANNING_TIMEOUT_SECONDS:-180}
+      PLANNING_MAX_ATTEMPTS: ${PLANNING_MAX_ATTEMPTS:-3}
     ports:
       - "8000:8000"
     volumes:
@@ -44,6 +67,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -61,10 +86,23 @@ services:
       ENVIRONMENT: production
       DATABASE_URL: postgresql+asyncpg://xingliu:xingliu@postgres:5432/xingliu
       REDIS_URL: redis://redis:6379/0
+      AVATAR_PROVIDER_ORDER: ${AVATAR_PROVIDER_ORDER:-duix,opentalking}
+      AVATAR_ROUTE_POLICY_VERSION: ${AVATAR_ROUTE_POLICY_VERSION:-avatar-route-v1}
       DUIX_BASE_URL: ${DUIX_BASE_URL:-http://host.docker.internal:8383/easy}
       DUIX_SHARED_DATA_ROOT: /duix-data
       DUIX_CONTAINER_DATA_ROOT: /code/data
       DUIX_MOCK: ${DUIX_MOCK:-false}
+      OPENTALKING_BASE_URL: ${OPENTALKING_BASE_URL:-}
+      OPENTALKING_API_KEY: ${OPENTALKING_API_KEY:-}
+      OPENTALKING_RENDER_ENABLED: ${OPENTALKING_RENDER_ENABLED:-false}
+      MODEL_GATEWAY_BASE_URL: ${MODEL_GATEWAY_BASE_URL:-}
+      MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY:-}
+      MODEL_GATEWAY_DEFAULT_MODEL: ${MODEL_GATEWAY_DEFAULT_MODEL:-}
+      MODEL_GATEWAY_TIMEOUT_SECONDS: ${MODEL_GATEWAY_TIMEOUT_SECONDS:-120}
+      AGENT_OPERATION_LEASE_SECONDS: ${AGENT_OPERATION_LEASE_SECONDS:-180}
+      AGENT_OPERATION_RETRY_BASE_SECONDS: ${AGENT_OPERATION_RETRY_BASE_SECONDS:-10}
+      PLANNING_TIMEOUT_SECONDS: ${PLANNING_TIMEOUT_SECONDS:-180}
+      PLANNING_MAX_ATTEMPTS: ${PLANNING_MAX_ATTEMPTS:-3}
     volumes:
       - type: bind
         source: ${DUIX_HOST_DATA_ROOT:-./data/duix}
@@ -72,6 +110,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:

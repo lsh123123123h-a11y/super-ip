@@ -1,20 +1,67 @@
 "use client";
 
-import { useState } from "react";
-import { submitDigitalHumanWorkflow, uploadAsset } from "../lib/api";
+import { useEffect, useState } from "react";
+import {
+  AvatarProvider,
+  listAvatarProviders,
+  previewAvatarRoute,
+  ProviderRouteDecision,
+  submitDigitalHumanWorkflow,
+  uploadAsset,
+} from "../lib/api";
 
 type Props = {
+  initialScript?: string;
   onNotify: (message: string) => void;
   onTaskCreated: () => void;
 };
 
-export default function RealVideoStudio({ onNotify, onTaskCreated }: Props) {
-  const [script, setScript] = useState("真正拖垮效率的，不是工具少，而是没有一套稳定的工作流。");
+export default function RealVideoStudio({ initialScript, onNotify, onTaskCreated }: Props) {
+  const [script, setScript] = useState(initialScript || "真正拖垮效率的，不是工具少，而是没有一套稳定的工作流。");
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [quality, setQuality] = useState<"720p" | "1080p">("720p");
+  const [provider, setProvider] = useState<"auto" | "duix" | "opentalking">("auto");
+  const [providers, setProviders] = useState<AvatarProvider[]>([]);
+  const [route, setRoute] = useState<ProviderRouteDecision | null>(null);
+  const [providerMessage, setProviderMessage] = useState("正在读取数字人能力网关…");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    async function loadProviders() {
+      try {
+        const catalog = await listAvatarProviders();
+        if (!active) return;
+        setProviders(catalog.providers);
+        if ("selected_provider" in catalog.default_route) {
+          setRoute(catalog.default_route);
+          setProviderMessage(`自动路由当前选择 ${catalog.default_route.selected_provider}`);
+        } else {
+          setProviderMessage(catalog.default_route.error);
+        }
+      } catch (caught) {
+        if (!active) return;
+        setProviderMessage(caught instanceof Error ? caught.message : "能力网关暂不可用");
+      }
+    }
+    void loadProviders();
+    return () => { active = false; };
+  }, []);
+
+  async function chooseProvider(nextProvider: "auto" | "duix" | "opentalking") {
+    setProvider(nextProvider);
+    setError("");
+    try {
+      const decision = await previewAvatarRoute({ provider: nextProvider });
+      setRoute(decision);
+      setProviderMessage(`${decision.reason}：${decision.selected_provider} · ${decision.selected_execution}`);
+    } catch (caught) {
+      setRoute(null);
+      setProviderMessage(caught instanceof Error ? caught.message : "当前路由不可用");
+    }
+  }
 
   async function submit() {
     if (!script.trim() || !avatarFile || !audioFile) {
@@ -32,6 +79,8 @@ export default function RealVideoStudio({ onNotify, onTaskCreated }: Props) {
         audio_path: audio.provider_path,
         aspect_ratio: "9:16",
         quality,
+        provider,
+        execution_mode: "auto",
       });
       onNotify("数字人任务已进入编排队列");
       onTaskCreated();
@@ -46,11 +95,11 @@ export default function RealVideoStudio({ onNotify, onTaskCreated }: Props) {
     <div className="module-view">
       <section className="module-intro compact">
         <div>
-          <span className="section-kicker">DUIX · OFFLINE AVATAR</span>
+          <span className="section-kicker">AVATAR ORCHESTRATION · DUIX / OPENTALKING</span>
           <h2>数字人口播生产线</h2>
-          <p>素材上传后由编排层异步执行，关闭页面也不会丢失任务。</p>
+          <p>素材上传后由编排层选择执行引擎；切换 Provider 不改变项目、任务和成片版本。</p>
         </div>
-        <span className="status-pill">首版引擎：Duix</span>
+        <span className="status-pill">{route ? `当前：${route.selected_provider}` : "等待路由"}</span>
       </section>
 
       <div className="real-video-grid">
@@ -76,6 +125,24 @@ export default function RealVideoStudio({ onNotify, onTaskCreated }: Props) {
             ))}
           </div>
 
+          <div className="field-label">执行策略</div>
+          <div className="provider-choice-grid">
+            <button className={provider === "auto" ? "selected" : ""} onClick={() => void chooseProvider("auto")}>
+              <b>自动路由</b><small>按优先级、可用性与执行方式选择</small><em>推荐</em>
+            </button>
+            {providers.map((item) => (
+              <button
+                key={item.provider_id}
+                className={provider === item.provider_id ? "selected" : ""}
+                disabled={!item.render_ready}
+                onClick={() => void chooseProvider(item.provider_id as "duix" | "opentalking")}
+              >
+                <b>{item.label}</b><small>{item.render_ready ? item.execution_modes.join(" / ") : item.reason}</small><em>{item.status === "ready" ? "可用" : "待配置"}</em>
+              </button>
+            ))}
+          </div>
+          <p className="route-preview"><span>路由</span>{providerMessage}</p>
+
           {error && <p className="form-error">{error}</p>}
           <button className="generate-button" disabled={submitting} onClick={submit}>
             {submitting ? <><i className="spinner" /> 正在上传并创建任务...</> : <>提交数字人任务 <span>→</span></>}
@@ -87,13 +154,13 @@ export default function RealVideoStudio({ onNotify, onTaskCreated }: Props) {
           <h3>本次任务会这样执行</h3>
           <div className="orchestration-flow">
             <article><span>01</span><div><b>检查素材</b><small>验证文件、格式和任务幂等键</small></div></article>
-            <article><span>02</span><div><b>进入 GPU 队列</b><small>编排服务控制并发和任务租约</small></div></article>
-            <article><span>03</span><div><b>Duix 渲染</b><small>提交任务并持续同步提供方进度</small></div></article>
+            <article><span>02</span><div><b>记录路由决策</b><small>保存候选引擎、选择原因和策略版本</small></div></article>
+            <article><span>03</span><div><b>{route?.selected_provider === "opentalking" ? "OpenTalking" : "Duix"} 渲染</b><small>Provider Job 独立记录原始状态和进度</small></div></article>
             <article><span>04</span><div><b>保存成片</b><small>记录独立作品版本，不覆盖历史</small></div></article>
           </div>
           <div className="orchestration-note">
             <b>真实异步链路</b>
-            <p>任务状态保存在 PostgreSQL，Redis 只负责排队。重复点击不会重复生成；失败步骤可以继续重试。</p>
+            <p>任务状态和路由决策保存在 PostgreSQL，Redis 只负责排队。OpenTalking 未配置时不会假装可用，也不会影响 Duix 生产主链。</p>
           </div>
         </section>
       </div>

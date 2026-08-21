@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,6 +13,9 @@ class DigitalHumanRenderRequest(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     aspect_ratio: str = Field(default="9:16", pattern=r"^(9:16|16:9|1:1)$")
     quality: str = Field(default="720p", pattern=r"^(720p|1080p)$")
+    provider: Literal["auto", "duix", "opentalking"] = "auto"
+    execution_mode: Literal["auto", "local", "self_hosted", "cloud_api"] = "auto"
+    provider_options: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowStepRead(BaseModel):
@@ -25,6 +28,20 @@ class WorkflowStepRead(BaseModel):
     progress: int
     attempt: int
     error_message: str | None
+
+
+class WorkflowRouteDecisionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    capability: str
+    requested_provider: str
+    requested_execution: str
+    selected_provider: str
+    selected_execution: str
+    policy_version: str
+    reason: str
+    candidates: list[dict[str, Any]]
+    created_at: datetime
 
 
 class WorkflowRead(BaseModel):
@@ -41,6 +58,7 @@ class WorkflowRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     steps: list[WorkflowStepRead]
+    route_decisions: list[WorkflowRouteDecisionRead]
 
 
 class AssetUploadResponse(BaseModel):
@@ -49,3 +67,17 @@ class AssetUploadResponse(BaseModel):
     provider_path: str
     download_url: str
     content_type: str | None
+
+
+class AssetRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    project_id: str | None
+    file_name: str
+    media_type: str
+    size_bytes: int
+    checksum: str | None
+    metadata_payload: dict[str, Any]
+    status: str
+    created_at: datetime

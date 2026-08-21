@@ -5,7 +5,14 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings
-from app.providers.base import ProviderJobState, ProviderStatus, ProviderSubmission
+from app.providers.base import (
+    AvatarRenderInput,
+    ExecutionMode,
+    ProviderDescriptor,
+    ProviderJobState,
+    ProviderStatus,
+    ProviderSubmission,
+)
 
 
 class DuixProviderError(RuntimeError):
@@ -15,20 +22,33 @@ class DuixProviderError(RuntimeError):
 class DuixProvider:
     """Adapter for the Duix offline `/easy/submit` and `/easy/query` APIs."""
 
+    provider_id = "duix"
+
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self.settings = settings
         self._client = client
+        self.timeout_seconds = settings.duix_timeout_seconds
+
+    def descriptor(self) -> ProviderDescriptor:
+        return ProviderDescriptor(
+            provider_id=self.provider_id,
+            label="Duix",
+            category="avatar.render",
+            capabilities=["avatar.render", "audio_driven_video", "progress_polling"],
+            execution_modes=[ExecutionMode.self_hosted.value, ExecutionMode.local.value],
+            render_ready=True,
+            integration_state="production",
+        )
 
     async def submit_render(
         self,
         *,
         external_job_id: str,
-        audio_path: str,
-        video_path: str,
+        request: AvatarRenderInput,
     ) -> ProviderSubmission:
         payload = {
-            "audio_url": audio_path,
-            "video_url": video_path,
+            "audio_url": request.audio_path,
+            "video_url": request.video_path,
             "code": external_job_id,
             "chaofen": 0,
             "watermark_switch": 0,

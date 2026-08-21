@@ -11,19 +11,18 @@ SaaS 业务层（Tenant、Project、ProductionOrder、Decision、ArtifactVersion
     ↓
 Agent Kernel（Intent、Plan、Policy、Evaluation、Replan）
     ├─ BrainPort → New API → 内部模型路由
-    ├─ AgentExecutorPort → Codex / Hermes / DeepSeek Harness
     └─ Capability Contract → Capability Dispatcher
-                              ├─ Handler → inline / durable plugin
-                              └─ Executor binding → Harness AgentOperation
+                              ├─ Handler → Brain / Tool / MCP / Provider / Workflow
+                              └─ 可选 External Executor → AgentOperation
                                       ↓
-                         Product / Workflow / Provider / Evaluator Registries
+                    Product / Capability / Workflow / Provider / Evaluator Registries
 ```
 
 当前主链已落库为 `Project → ProductionOrder → AgentRun → PlanVersion → WorkflowRun → ArtifactVersion`。旧 `IPProfile / Campaign / ContentProject` 作为兼容业务对象保留，新 Agent 链路通过 Snapshot 和 ContentItem 逐步承接。
 
 依赖方向固定为“适配器依赖合同”。`backend/app/agent/` 不导入能力插件、工作流 Schema 或 Provider；`agent_runtime.py` 只处理通用 `CapabilityOutcome` 和 `EvaluationResult`。数字人口播的工作流查询、提交、失败归一化与取消位于 `capabilities/avatar_render.py`，其具体状态机位于 `workflows/avatar_render.py`。
 
-Capability Registry 分离“目录定义”和“可执行绑定”。能力可以绑定普通 Handler 或 Harness Executor；未绑定的目录项不会进入规划器的 installed catalog。Product、Capability、Evaluator、Workflow、Provider、Executor 均支持通过部署配置中的扩展模块注册，新增业务不再修改通用 Worker。
+Capability Registry 分离“目录定义”和“可执行绑定”。普通业务能力默认绑定产品自己的 Handler；Handler 可以调用 Brain、Tool/MCP、Provider 或启动 Workflow。只有确实需要独立自主运行环境的能力才绑定可选 External Executor。未绑定的目录项不会进入规划器的 installed catalog。Product、Capability、Evaluator、Workflow、Provider、Executor 均支持通过部署配置中的扩展模块注册，新增业务不再修改通用 Worker。
 
 所有可能等待外部系统的 Agent 内部工作统一进入 `AgentOperation` 控制面：
 
@@ -31,16 +30,18 @@ Capability Registry 分离“目录定义”和“可执行绑定”。能力可
 API 事务
 ProductionOrder + AgentRun + AgentOperation + Outbox
                          ↓
-Worker 租约领取 → 权限/预算/超时检查 → BrainPort 或 AgentExecutorPort
+Worker 租约领取 → 权限/预算/超时检查 → BrainPort 或可选 AgentExecutorPort
                          ↓
 PlanVersion / 外部执行句柄 / Usage / Trace / 有界重试
 ```
 
 因此创建生产单不等待云模型。初始 API 可以返回 `plan=null`；后台规划成功后才创建 PlanVersion，并依据自动化策略进入方案确认或执行队列。
 
-## 2. 大脑、执行器与能力不是三套产品
+## 2. Brain、Capability 与执行机制边界
 
-`BrainPort` 负责需要模型判断的结构化理解、规划和评价；`AgentExecutorPort` 负责需要 Harness 长时运行的执行；`Capability Contract` 负责产品可交付能力。三者都隐藏在同一个星流 Agent 后面，前端不提供 Harness、模型或 Provider 选择。
+产品自己的 Agent Runtime 是唯一运行主体。`BrainPort` 是 Runtime 获取模型推理的端口，可用于结构化理解、规划、内容生成和后续模型评价；`Capability Contract` 表达业务能做什么，不能用执行器类型命名业务语义。`content.strategy`、`content.generate` 因而由 Brain-backed Handler 实现，只依赖模型网关，不依赖 Codex 或 Harness。
+
+Provider 负责同类服务的可替换适配与路由；Workflow 负责需要等待、轮询、恢复或多阶段推进的可靠执行；Tool/MCP 应作为 Capability 内部调用的原子动作与资源访问入口，在出现真实内容研究/检索需求时按权限、审计和结果合同接入。`AgentExecutorPort` 仅保留给 Codex、Hermes、CLI 等拥有独立生命周期的自主外部执行器，不是核心内容能力的默认路径。
 
 New API 只作为 OpenAI-compatible 内部模型网关。星流向它发送带 JSON Schema 的结构化请求，返回内容必须再次通过内核合同验证。CCSwitch 只可辅助运维配置，不作为业务运行时依赖。
 
@@ -82,7 +83,7 @@ queued
 
 数据库是事实来源。`OutboxEvent` 在业务事务提交后再投递 Redis，Worker 通过 DB 租约和恢复扫描重新发现任务；Redis 不再承担唯一任务事实。`StepAttempt` 不可变保存每次执行，`ProviderJob` 保存外部任务。
 
-`AgentOperation` 与 `WorkflowRun` 的边界不同：前者承载 Agent 的规划和 Harness 级长任务；后者承载媒体等确定性业务能力的可靠执行。两者都使用数据库租约与 Outbox，但不互相冒充。
+`AgentOperation` 与 `WorkflowRun` 的边界不同：前者承载 Agent 的异步规划和可选外部执行器任务；后者承载 Provider 调用或多阶段业务能力的可靠执行。两者都使用数据库租约与 Outbox，但不互相冒充。
 
 ## 5. 评价、返工与重规划
 
@@ -96,7 +97,7 @@ Capability succeeded → Evaluate
   └─ manual / 超过 max_auto_rework → manual_intervention
 ```
 
-Harness 结果必须返回终态 `CapabilityOutcome`；Dispatcher 将其转换回同一条评价链。这样 Handler、CLI/Harness、后续 MCP/Tool Adapter 不需要各自实现质量闭环。
+外部 Executor 结果必须返回终态 `CapabilityOutcome`；Dispatcher 将其转换回同一条评价链。Handler、Provider/Workflow 和可选外部 Executor 都不各自实现质量闭环。内置内容评价器目前只增加了策略字段完整性、标题与正文长度等确定性规则；真正的内容质量仍应后续组合 Brain 与领域规则判断。
 
 ## 6. 编排可靠性规则
 
@@ -116,4 +117,4 @@ Harness 结果必须返回终态 `CapabilityOutcome`；Dispatcher 将其转换�
 - OpenTalking：第二引擎，覆盖视频创建、视频克隆与后续实时会话；通过星流视频桥归一化为异步 Provider Job；
 - 云 Provider：突发扩容与高规格成片。
 
-下一阶段优先接入第一个真实 Codex/Harness Executor Adapter，并用“内容研究或内容生成”作为第二个非数字人 Product + Workflow 验证扩展面；同时把领域评价器接入 Brain/规则组合评价。随后再接版本化价格表与 `budget_spent`、对象存储，正式 OIDC/RBAC/RLS、配额账本和长期 Knowledge/Retrieval 按真实多租户上线节奏推进。新能力必须沿用已冻结合同，不反向修改 Agent Core。
+当前第二个非数字人 Product 为 `content.article`，通过 Brain-backed `content.strategy → content.generate` 验证 Artifact 在能力间传递以及统一 Evaluate 闭环。下一阶段优先加入真实 `content.research` / 爆款研究：先接搜索或平台数据 Tool/MCP，再由 Capability 形成有来源的研究 Artifact，并加入 Brain + 领域规则评价。External Executor Adapter 按真实自主执行场景再接，不作为这条业务链的前置条件。随后再按上线需求推进版本化价格、对象存储、OIDC/RBAC/RLS、配额与 Knowledge/Retrieval。

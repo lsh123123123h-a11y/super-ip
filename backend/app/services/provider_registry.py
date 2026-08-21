@@ -78,7 +78,7 @@ class ProviderRegistry:
         descriptor = provider.descriptor()
         if capability is not None and capability not in descriptor.capabilities:
             raise ProviderRoutingError(f"{provider_id} 不支持能力 {capability}")
-        if not descriptor.render_ready:
+        if not descriptor.ready:
             raise ProviderRoutingError(descriptor.reason or f"{provider_id} 尚未就绪")
         return provider
 
@@ -111,11 +111,11 @@ class ProviderRegistry:
                 continue
             execution_ok = requested_execution == "auto" or requested_execution in descriptor.execution_modes
             health_ok = availability is None or availability.get(provider_id, False)
-            eligible = descriptor.render_ready and execution_ok and health_ok
+            eligible = descriptor.ready and execution_ok and health_ok
             reason = descriptor.reason
-            if descriptor.render_ready and not execution_ok:
+            if descriptor.ready and not execution_ok:
                 reason = f"不支持执行方式 {requested_execution}"
-            elif descriptor.render_ready and not health_ok:
+            elif descriptor.ready and not health_ok:
                 reason = "健康检查未通过"
             candidates.append(
                 {
@@ -133,7 +133,7 @@ class ProviderRegistry:
                 raise ProviderRoutingError(
                     f"未知或不支持 {capability} 的 Provider：{requested_provider}"
                 )
-            if not descriptor.render_ready:
+            if not descriptor.ready:
                 raise ProviderRoutingError(descriptor.reason or f"{requested_provider} 尚未就绪")
             if availability is not None and not availability.get(requested_provider, False):
                 raise ProviderRoutingError(f"{requested_provider} 健康检查未通过")
@@ -198,16 +198,24 @@ class ProviderRegistry:
             if capability is not None and capability not in descriptor.capabilities:
                 continue
             probe_result: dict[str, Any] = {"reachable": None, "mode": "not_probed"}
-            status = "ready" if descriptor.render_ready else "setup_required"
+            status = "ready" if descriptor.ready else "setup_required"
             if probe:
                 try:
                     probe_result = await provider.probe()
                     if not probe_result.get("reachable"):
-                        status = "unavailable" if descriptor.render_ready else "setup_required"
+                        status = "unavailable" if descriptor.ready else "setup_required"
                 except Exception as exc:  # noqa: BLE001
                     probe_result = {"reachable": False, "message": str(exc)}
                     status = "unavailable"
-            rows.append({**asdict(descriptor), "status": status, "probe": probe_result})
+            rows.append(
+                {
+                    **asdict(descriptor),
+                    # Compatibility field for the first avatar provider API.
+                    "render_ready": descriptor.ready,
+                    "status": status,
+                    "probe": probe_result,
+                }
+            )
         return rows
 
 

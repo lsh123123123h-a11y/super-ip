@@ -48,7 +48,7 @@ class BrainPlanner(PlannerPort):
                 purpose="production_plan",
                 system_instruction=(
                     "你是星流 AI 的内部生产规划器。只能使用能力目录中的 capability key，"
-                    "输出满足 JSON Schema 的有向无环计划。不得输出模型、Provider、Harness、"
+                    "输出满足 JSON Schema 的有向无环计划。不得输出模型、Provider、外部 Executor、"
                     "密钥或内部路由选择；这些属于基础设施。"
                 ),
                 user_input={

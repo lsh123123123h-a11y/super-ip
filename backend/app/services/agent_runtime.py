@@ -133,6 +133,42 @@ async def _write_artifact(
     return version
 
 
+async def _load_artifact_context(
+    session,
+    *,
+    order: ProductionOrder,
+) -> dict[str, dict[str, Any]]:
+    """Expose the latest usable artifact of each key to downstream capabilities."""
+
+    rows = list(
+        (
+            await session.execute(
+                select(Artifact, ArtifactVersion)
+                .join(ArtifactVersion, ArtifactVersion.artifact_id == Artifact.id)
+                .where(
+                    Artifact.production_order_id == order.id,
+                    ArtifactVersion.status != ArtifactVersionStatus.returned,
+                )
+                .order_by(
+                    ArtifactVersion.created_at.desc(),
+                    ArtifactVersion.version.desc(),
+                )
+            )
+        ).all()
+    )
+    artifacts: dict[str, dict[str, Any]] = {}
+    for artifact, version in rows:
+        if artifact.artifact_key in artifacts:
+            continue
+        artifacts[artifact.artifact_key] = {
+            "artifact_type": artifact.artifact_type,
+            "version": version.version,
+            "status": version.status.value,
+            "content": version.content_payload,
+        }
+    return artifacts
+
+
 async def run_agent_once(production_order_id: str, agent_run_id: str | None = None) -> None:
     async with SessionLocal() as session:
         order = await session.scalar(
@@ -185,6 +221,7 @@ async def run_agent_once(production_order_id: str, agent_run_id: str | None = No
         dispatcher = CapabilityDispatcher(registry)
         raw_inputs = (run.context_snapshot or {}).get("inputs") or {}
         inputs = raw_inputs if isinstance(raw_inputs, dict) else {}
+        artifacts = await _load_artifact_context(session, order=order)
 
         if order.status == ProductionOrderStatus.canceling:
             dispatched_events = list(
@@ -211,6 +248,7 @@ async def run_agent_once(production_order_id: str, agent_run_id: str | None = No
                     plan=plan,
                     step=step,
                     inputs=inputs,
+                    artifacts=artifacts,
                 )
                 await dispatcher.interrupt(
                     context,
@@ -301,6 +339,7 @@ async def run_agent_once(production_order_id: str, agent_run_id: str | None = No
                 plan=plan,
                 step=step,
                 inputs=inputs,
+                artifacts=artifacts,
                 execution_attempt=len(rework_by_step.get(step_key, [])) + 1,
                 evaluation_feedback=(
                     list(rework_by_step[step_key][-1].get("issues") or [])
@@ -360,6 +399,12 @@ async def run_agent_once(production_order_id: str, agent_run_id: str | None = No
                     lineage_payload=artifact.lineage_payload,
                     run=run,
                 )
+                artifacts[artifact.artifact_key] = {
+                    "artifact_type": artifact.artifact_type,
+                    "version": artifact_version.version,
+                    "status": artifact_version.status.value,
+                    "content": artifact.content_payload,
+                }
 
             if outcome.status == OutcomeStatus.succeeded:
                 order.status = ProductionOrderStatus.evaluating

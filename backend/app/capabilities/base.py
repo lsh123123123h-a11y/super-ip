@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,7 @@ class CapabilityContext:
     plan: PlanVersion
     step: PlanStepSpec
     inputs: dict[str, Any]
+    artifacts: dict[str, dict[str, Any]] = field(default_factory=dict)
     execution_attempt: int = 1
     evaluation_feedback: list[dict[str, Any]] | None = None
 

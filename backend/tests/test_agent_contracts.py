@@ -10,6 +10,7 @@ from app.agent.contracts import (
     ExecutionKind,
 )
 from app.capabilities.registry import CapabilityRegistry, get_capability_registry
+from app.core.config import get_settings
 
 
 def _plan_payload() -> dict:
@@ -60,9 +61,18 @@ def test_capability_registry_separates_catalog_from_installed_handlers() -> None
     registry = get_capability_registry()
 
     assert registry.definition("content.strategy") is not None
-    assert registry.handler("content.strategy") is None
+    assert registry.definition("content.strategy").execution_kind == ExecutionKind.inline
     assert registry.handler("avatar.render") is not None
-    assert "content.strategy" not in {item.key for item in registry.installed_catalog()}
+    if get_settings().model_gateway_configured:
+        assert registry.handler("content.strategy") is not None
+        assert "content.strategy" in {
+            item.key for item in registry.installed_catalog()
+        }
+    else:
+        assert registry.handler("content.strategy") is None
+        assert "content.strategy" not in {
+            item.key for item in registry.installed_catalog()
+        }
     assert "avatar.render" in {item.key for item in registry.installed_catalog()}
 
 
@@ -80,26 +90,27 @@ def test_capability_registry_rejects_duplicate_contracts() -> None:
         registry.register(definition)
 
 
-def test_harness_binding_is_not_installed_until_executor_adapter_exists() -> None:
+def test_external_binding_is_not_installed_until_executor_adapter_exists() -> None:
     registry = CapabilityRegistry()
     definition = CapabilityDefinition(
         key="content.research",
         version="1.0.0",
         label="内容研究",
-        execution_kind=ExecutionKind.harness,
+        execution_kind=ExecutionKind.external,
     )
     registry.register(definition, source="test.catalog")
     assert registry.installed_catalog() == []
 
-    registry.bind_executor(
+    registry.bind_external_executor(
         definition.key,
-        "harness.codex",
+        "external.research-agent",
         metadata={"allowed_tools": ["web.search"]},
     )
 
     registration = registry.resolve(definition.key)
     assert registration is not None
-    assert registration.executor_key == "harness.codex"
+    assert registration.external_executor_key == "external.research-agent"
+    assert registration.executor_key == "external.research-agent"
     assert registration.metadata["allowed_tools"] == ["web.search"]
     assert registry.installed_catalog() == []
 

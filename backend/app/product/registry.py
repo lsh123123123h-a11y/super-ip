@@ -30,9 +30,11 @@ class ProductRegistry:
 @lru_cache
 def get_product_registry() -> ProductRegistry:
     registry = ProductRegistry()
+    from app.product.content_article import register_content_article_product
     from app.product.digital_human import register_digital_human_product
 
     register_digital_human_product(registry)
+    register_content_article_product(registry)
     load_registrar_modules(
         get_settings().extension_modules("product"),
         hook_name="register_products",

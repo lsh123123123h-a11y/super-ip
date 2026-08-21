@@ -35,7 +35,7 @@ class OpenTalkingProvider:
 
     def descriptor(self) -> ProviderDescriptor:
         configured = bool(self.settings.opentalking_base_url.strip())
-        render_ready = configured and self.settings.opentalking_render_enabled
+        ready = configured and self.settings.opentalking_render_enabled
         reason = None
         if not configured:
             reason = "尚未配置 OpenTalking 服务地址"
@@ -47,8 +47,8 @@ class OpenTalkingProvider:
             category="avatar.render",
             capabilities=["avatar.render", "avatar.video_clone", "avatar.session.realtime"],
             execution_modes=[ExecutionMode.self_hosted.value, ExecutionMode.cloud_api.value],
-            render_ready=render_ready,
-            integration_state="production" if render_ready else "probe_only",
+            ready=ready,
+            integration_state="production" if ready else "probe_only",
             reason=reason,
             poll_interval_seconds=2.0,
         )
@@ -71,7 +71,7 @@ class OpenTalkingProvider:
         external_job_id: str,
         request: AvatarRenderInput,
     ) -> ProviderSubmission:
-        if not self.descriptor().render_ready:
+        if not self.descriptor().ready:
             raise OpenTalkingProviderError(self.descriptor().reason or "OpenTalking 视频桥接器未就绪")
         payload = {
             "external_job_id": external_job_id,

@@ -37,7 +37,7 @@ class DuixProvider:
             category="avatar.render",
             capabilities=["avatar.render", "audio_driven_video", "progress_polling"],
             execution_modes=[ExecutionMode.self_hosted.value, ExecutionMode.local.value],
-            render_ready=True,
+            ready=True,
             integration_state="production",
             poll_interval_seconds=self.settings.duix_poll_interval_seconds,
         )

@@ -167,7 +167,7 @@ async def stage_planning_operation(
     return operation, created
 
 
-async def stage_executor_operation(
+async def stage_external_executor_operation(
     session: AsyncSession,
     *,
     order: ProductionOrder,
@@ -199,6 +199,31 @@ async def stage_executor_operation(
     )
     operation.plan_version_id = request.plan_version_id
     return operation, created
+
+
+async def stage_executor_operation(
+    session: AsyncSession,
+    *,
+    order: ProductionOrder,
+    run: AgentRun,
+    executor_key: str,
+    request: AgentExecutionRequest,
+    idempotency_key: str,
+    policy: ExecutionPolicy,
+    trace: TraceContext | None = None,
+) -> tuple[AgentOperation, bool]:
+    """Compatibility alias for the v1 external-executor staging API."""
+
+    return await stage_external_executor_operation(
+        session,
+        order=order,
+        run=run,
+        executor_key=executor_key,
+        request=request,
+        idempotency_key=idempotency_key,
+        policy=policy,
+        trace=trace,
+    )
 
 
 def _production_request(order: ProductionOrder, run: AgentRun) -> ProductionOrderCreate:
@@ -248,7 +273,7 @@ async def _execute_planning(
     )
 
 
-async def _execute_harness(
+async def _execute_external_executor(
     operation: AgentOperation,
 ) -> OperationExecutionResult:
     if not operation.executor_key:
@@ -556,7 +581,7 @@ async def run_agent_operation_once(operation_id: str, worker_id: str = "agent-wo
         if operation.operation_type == AgentOperationType.planning.value:
             result = await _execute_planning(operation, order, run)
         elif operation.operation_type == AgentOperationType.executor.value:
-            result = await _execute_harness(operation)
+            result = await _execute_external_executor(operation)
         else:
             raise PermanentOperationError(f"未知 AgentOperation 类型：{operation.operation_type}")
     except Exception as exc:  # noqa: BLE001

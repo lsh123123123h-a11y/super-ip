@@ -17,9 +17,9 @@ class CapabilityUnavailableError(RuntimeError):
 class CapabilityDispatcher:
     """Resolve a product capability without exposing its execution mechanism.
 
-    Inline and durable plugins use a CapabilityHandler. Harness-backed abilities
-    are persisted as AgentOperations and observed through the same outcome
-    contract, so the Agent runtime has no Executor-specific branches.
+    Normal product abilities use a CapabilityHandler. Optional external-executor
+    abilities are persisted as AgentOperations and observed through the same
+    outcome contract, so the Agent runtime has no Executor-specific branches.
     """
 
     def __init__(self, registry: CapabilityRegistry) -> None:
@@ -38,7 +38,7 @@ class CapabilityDispatcher:
             )
         if registration.handler is not None:
             return await registration.handler.execute(context)
-        return await self._execute_with_harness(context, registration)
+        return await self._execute_with_external_executor(context, registration)
 
     async def interrupt(
         self,
@@ -51,7 +51,7 @@ class CapabilityDispatcher:
         if registration.handler is not None:
             await registration.handler.interrupt(context, external_execution_id)
             return
-        if not external_execution_id or not registration.executor_key:
+        if not external_execution_id or not registration.external_executor_key:
             return
         operation = await context.session.get(AgentOperation, external_execution_id)
         if operation is None or operation.agent_run_id != context.run.id:
@@ -65,7 +65,9 @@ class CapabilityDispatcher:
         if operation.external_execution_id:
             from app.executors.registry import get_executor_registry
 
-            executor = get_executor_registry().executor(registration.executor_key)
+            executor = get_executor_registry().executor(
+                registration.external_executor_key
+            )
             if executor is not None:
                 await executor.interrupt(operation.external_execution_id)
         operation.status = AgentOperationStatus.canceled.value
@@ -73,15 +75,17 @@ class CapabilityDispatcher:
         operation.lease_owner = None
         operation.lease_expires_at = None
 
-    async def _execute_with_harness(
+    async def _execute_with_external_executor(
         self,
         context: CapabilityContext,
         registration: CapabilityRegistration,
     ) -> CapabilityOutcome:
-        from app.services.agent_operation_service import stage_executor_operation
+        from app.services.agent_operation_service import (
+            stage_external_executor_operation,
+        )
 
         definition = registration.definition
-        executor_key = registration.executor_key
+        executor_key = registration.external_executor_key
         if not executor_key:
             raise CapabilityUnavailableError(
                 f"能力缺少 Executor 绑定：{context.step.capability}"
@@ -115,7 +119,7 @@ class CapabilityDispatcher:
                 workspace_ref=snapshot.get("workspace_ref"),
                 idempotency_key=idempotency_key,
             )
-            operation, _ = await stage_executor_operation(
+            operation, _ = await stage_external_executor_operation(
                 context.session,
                 order=context.order,
                 run=context.run,
@@ -132,7 +136,7 @@ class CapabilityDispatcher:
             return CapabilityOutcome(
                 status=OutcomeStatus.dispatched,
                 external_execution_id=operation.id,
-                metadata={"execution_kind": "harness", "executor_key": executor_key},
+                metadata={"execution_kind": "external", "executor_key": executor_key},
             )
 
         if operation.status == AgentOperationStatus.succeeded.value:

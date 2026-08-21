@@ -17,14 +17,22 @@ from app.agent.contracts import (
     ExecutionKind,
     OutcomeStatus,
 )
+from app.agent.brain import StructuredBrainResponse
 from app.agent.executor import AgentExecutionResult, ExecutionHandle
 from app.agent.operations import ExecutorDefinition
-from app.capabilities.registry import get_capability_registry
+from app.capabilities.content import (
+    ContentGenerateCapability,
+    ContentStrategyCapability,
+)
+from app.capabilities.foundation import IntentNormalizeCapability
+from app.capabilities.registry import CapabilityRegistry, get_capability_registry
 from app.evaluators.registry import get_evaluator_registry
 from app.executors.registry import get_executor_registry
 from app.models.agent import (
     AgentEvent,
     AgentOperation,
+    Artifact,
+    ArtifactVersion,
     DecisionRequest,
     DecisionStatus,
     PlanVersion,
@@ -68,17 +76,17 @@ class PassOnSecondArtifactVersion:
         )
 
 
-class SuccessfulHarness:
+class SuccessfulExternalExecutor:
     async def start(self, request):
         return ExecutionHandle(
-            executor_key="harness.test",
+            executor_key="external.test",
             execution_id=f"execution-{request.idempotency_key}",
             state="succeeded",
         )
 
     async def resume(self, execution_id):
         return ExecutionHandle(
-            executor_key="harness.test",
+            executor_key="external.test",
             execution_id=execution_id,
             state="succeeded",
         )
@@ -96,12 +104,49 @@ class SuccessfulHarness:
                 artifact=ArtifactDraft(
                     artifact_key="research_report",
                     artifact_type="document",
-                    content_payload={"summary": "Harness execution completed"},
+                    content_payload={"summary": "External execution completed"},
                     lineage_payload={"execution_id": execution_id},
                 ),
             ),
             usage={"total_tokens": 12},
         )
+
+
+class ContentBrain:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def complete_structured(self, request):
+        self.requests.append(request)
+        if request.purpose == "content_strategy":
+            output = {
+                "audience": "内容创业者",
+                "angle": "用生产闭环解释 Agent 产品",
+                "core_message": "业务能力不应依赖开发工具",
+                "hook": "没有 Codex，Agent 产品还能工作吗？",
+                "key_points": ["Brain 决策", "Capability 执行", "Evaluator 闭环"],
+                "structure": [{"section": "开头", "purpose": "澄清误区"}],
+                "tone": "专业直接",
+                "risks": [],
+            }
+        else:
+            output = {
+                "title": "开发工具不是 Agent 产品运行时",
+                "summary": "厘清 Brain、Capability 与外部执行器的职责。",
+                "body_markdown": "产品自己的 Agent Runtime 负责推进任务闭环。" * 20,
+                "platform": "公众号",
+                "calls_to_action": [],
+                "factual_claims": [],
+            }
+        return StructuredBrainResponse(
+            output=output,
+            model_ref="content-test-model",
+            gateway_ref="test-brain",
+            usage={"total_tokens": 30},
+        )
+
+    async def probe(self):
+        return {"ok": True}
 
 
 async def test_agent_kernel_dispatches_avatar_through_capability_plugin() -> None:
@@ -402,19 +447,132 @@ async def test_failed_evaluation_reworks_same_step_then_continues() -> None:
     )
 
 
-async def test_harness_bound_capability_executes_through_agent_operation() -> None:
-    capability_key = "test.harness.generate"
-    executor_key = "harness.test"
+async def test_content_article_runs_on_product_runtime_without_external_executor(
+    monkeypatch,
+) -> None:
+    from app.product import planning as planning_module
+    from app.services import agent_runtime as runtime_module
+
+    brain = ContentBrain()
+    capabilities = CapabilityRegistry()
+    capabilities.register(
+        CapabilityDefinition(
+            key="agent.intent.normalize",
+            version="1.0.0",
+            label="目标结构化",
+            execution_kind=ExecutionKind.inline,
+        ),
+        IntentNormalizeCapability(),
+        source="integration-test",
+    )
+    capabilities.register(
+        CapabilityDefinition(
+            key="content.strategy",
+            version="1.0.0",
+            label="内容策略",
+            execution_kind=ExecutionKind.inline,
+        ),
+        ContentStrategyCapability(brain),
+        source="integration-test",
+    )
+    capabilities.register(
+        CapabilityDefinition(
+            key="content.generate",
+            version="1.0.0",
+            label="内容生成",
+            execution_kind=ExecutionKind.inline,
+        ),
+        ContentGenerateCapability(brain),
+        source="integration-test",
+    )
+    monkeypatch.setattr(
+        planning_module,
+        "get_capability_registry",
+        lambda: capabilities,
+    )
+    monkeypatch.setattr(planning_module, "create_configured_brain", lambda: None)
+    monkeypatch.setattr(
+        runtime_module,
+        "get_capability_registry",
+        lambda: capabilities,
+    )
+
+    principal = Principal(tenant_id="content-test-tenant", user_id="content-test-user")
+    async with SessionLocal() as session:
+        project = await create_project(
+            session,
+            principal=principal,
+            name="Content Runtime Integration",
+            goal="验证非数字人内容链路",
+            settings_payload={},
+        )
+        overview, _ = await create_production_order(
+            session,
+            principal=principal,
+            idempotency_key="content-article-order-v1",
+            payload=ProductionOrderCreate(
+                project_id=project.id,
+                product_key="content.article",
+                intent_text="生成一篇解释 Agent 产品边界的公众号文章",
+                automation_mode="automatic",
+                inputs={"target_platforms": ["公众号"]},
+            ),
+        )
+        planning = await session.scalar(
+            select(AgentOperation).where(
+                AgentOperation.agent_run_id == overview.agent_run.id
+            )
+        )
+        assert planning is not None
+        planning_id = planning.id
+        order_id = overview.order.id
+        run_id = overview.agent_run.id
+
+    await run_agent_operation_once(planning_id, "integration-worker")
+    await run_agent_once(order_id, run_id)
+
+    async with SessionLocal() as session:
+        order = await session.get(ProductionOrder, order_id)
+        operations = list(
+            (
+                await session.execute(
+                    select(AgentOperation).where(AgentOperation.agent_run_id == run_id)
+                )
+            ).scalars()
+        )
+        artifacts = list(
+            (
+                await session.execute(
+                    select(Artifact.artifact_key, ArtifactVersion.content_payload)
+                    .join(ArtifactVersion, ArtifactVersion.artifact_id == Artifact.id)
+                    .where(Artifact.production_order_id == order_id)
+                )
+            ).all()
+        )
+
+    assert order is not None and order.status == ProductionOrderStatus.succeeded
+    assert [operation.operation_type for operation in operations] == ["planning"]
+    artifact_map = dict(artifacts)
+    assert set(artifact_map) == {"intent_spec", "strategy_proposal", "content_draft"}
+    assert artifact_map["content_draft"]["platform"] == "公众号"
+    assert brain.requests[1].user_input["artifacts"]["strategy_proposal"][
+        "content"
+    ]["core_message"] == "业务能力不应依赖开发工具"
+
+
+async def test_external_executor_capability_executes_through_agent_operation() -> None:
+    capability_key = "test.external.generate"
+    executor_key = "external.test"
     executors = get_executor_registry()
     if executors.definition(executor_key) is None:
         executors.register(
             ExecutorDefinition(
                 key=executor_key,
                 version="1.0.0",
-                label="测试 Harness",
+                label="测试外部执行器",
                 supported_operations=[capability_key],
             ),
-            SuccessfulHarness(),
+            SuccessfulExternalExecutor(),
         )
     capabilities = get_capability_registry()
     if capabilities.definition(capability_key) is None:
@@ -422,29 +580,29 @@ async def test_harness_bound_capability_executes_through_agent_operation() -> No
             CapabilityDefinition(
                 key=capability_key,
                 version="1.0.0",
-                label="Harness 生成测试",
-                execution_kind=ExecutionKind.harness,
+                label="外部执行器生成测试",
+                execution_kind=ExecutionKind.external,
             ),
-            executor_key=executor_key,
+            external_executor_key=executor_key,
             source="integration-test",
         )
 
-    principal = Principal(tenant_id="harness-test-tenant", user_id="harness-test-user")
+    principal = Principal(tenant_id="external-test-tenant", user_id="external-test-user")
     async with SessionLocal() as session:
         project = await create_project(
             session,
             principal=principal,
-            name="Harness Integration",
+            name="External Executor Integration",
             goal="验证通用执行器绑定",
             settings_payload={},
         )
         overview, _ = await create_production_order(
             session,
             principal=principal,
-            idempotency_key="harness-operation-order-v1",
+            idempotency_key="external-operation-order-v1",
             payload=ProductionOrderCreate(
                 project_id=project.id,
-                intent_text="通过 Harness 生成研究报告",
+                intent_text="通过可选外部执行器生成研究报告",
                 automation_mode="automatic",
                 inputs={},
             ),

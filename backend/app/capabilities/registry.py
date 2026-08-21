@@ -12,13 +12,19 @@ from app.core.extensions import load_registrar_modules
 class CapabilityRegistration:
     definition: CapabilityDefinition
     handler: CapabilityHandler | None = None
-    executor_key: str | None = None
+    external_executor_key: str | None = None
     source: str = "application"
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def installed(self) -> bool:
-        return self.handler is not None or self.executor_key is not None
+        return self.handler is not None or self.external_executor_key is not None
+
+    @property
+    def executor_key(self) -> str | None:
+        """Compatibility alias for extensions built against the v1 registry."""
+
+        return self.external_executor_key
 
 
 class CapabilityRegistry:
@@ -30,20 +36,27 @@ class CapabilityRegistry:
         definition: CapabilityDefinition,
         handler: CapabilityHandler | None = None,
         *,
+        external_executor_key: str | None = None,
         executor_key: str | None = None,
         source: str = "application",
         metadata: dict[str, Any] | None = None,
     ) -> None:
         if definition.key in self._registrations:
             raise ValueError(f"能力重复注册：{definition.key}")
-        if handler is not None and executor_key is not None:
-            raise ValueError(f"能力 {definition.key} 不能同时绑定 Handler 和 Executor")
-        if executor_key is not None and definition.execution_kind != ExecutionKind.harness:
-            raise ValueError(f"只有 harness 能力可以绑定 Executor：{definition.key}")
+        if external_executor_key and executor_key and external_executor_key != executor_key:
+            raise ValueError(f"能力 {definition.key} 收到了冲突的外部 Executor 绑定")
+        selected_executor = external_executor_key or executor_key
+        if handler is not None and selected_executor is not None:
+            raise ValueError(f"能力 {definition.key} 不能同时绑定 Handler 和外部 Executor")
+        if selected_executor is not None and definition.execution_kind not in {
+            ExecutionKind.external,
+            ExecutionKind.harness,
+        }:
+            raise ValueError(f"只有 external 能力可以绑定外部 Executor：{definition.key}")
         self._registrations[definition.key] = CapabilityRegistration(
             definition=definition,
             handler=handler,
-            executor_key=executor_key,
+            external_executor_key=selected_executor,
             source=source,
             metadata=metadata or {},
         )
@@ -65,7 +78,7 @@ class CapabilityRegistry:
             metadata=registration.metadata,
         )
 
-    def bind_executor(
+    def bind_external_executor(
         self,
         key: str,
         executor_key: str,
@@ -76,13 +89,33 @@ class CapabilityRegistry:
         registration = self._require(key)
         if registration.installed:
             raise ValueError(f"能力已绑定执行入口：{key}")
-        if registration.definition.execution_kind != ExecutionKind.harness:
-            raise ValueError(f"只有 harness 能力可以绑定 Executor：{key}")
+        if registration.definition.execution_kind not in {
+            ExecutionKind.external,
+            ExecutionKind.harness,
+        }:
+            raise ValueError(f"只有 external 能力可以绑定外部 Executor：{key}")
         self._registrations[key] = CapabilityRegistration(
             definition=registration.definition,
-            executor_key=executor_key,
+            external_executor_key=executor_key,
             source=source or registration.source,
             metadata={**registration.metadata, **(metadata or {})},
+        )
+
+    def bind_executor(
+        self,
+        key: str,
+        executor_key: str,
+        *,
+        source: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Compatibility alias; new code should name the optional mechanism explicitly."""
+
+        self.bind_external_executor(
+            key,
+            executor_key,
+            source=source,
+            metadata=metadata,
         )
 
     def _require(self, key: str) -> CapabilityRegistration:
@@ -100,11 +133,14 @@ class CapabilityRegistry:
             return False
         if registration.handler is not None:
             return True
-        if not registration.executor_key:
+        if not registration.external_executor_key:
             return False
         from app.executors.registry import get_executor_registry
 
-        return get_executor_registry().executor(registration.executor_key) is not None
+        return (
+            get_executor_registry().executor(registration.external_executor_key)
+            is not None
+        )
 
     def definition(self, key: str) -> CapabilityDefinition | None:
         registration = self.resolve(key)

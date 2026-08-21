@@ -22,7 +22,7 @@ class ImageProvider:
             category="image",
             capabilities=["image.generate"],
             execution_modes=["local"],
-            render_ready=True,
+            ready=True,
             integration_state="production",
         )
 
@@ -139,3 +139,14 @@ def test_registry_routes_a_new_capability_without_avatar_specific_branch() -> No
     assert decision.capability == "image.generate"
     assert decision.selected_provider == "image-local"
     assert decision.policy_version == "image.generate-route-v1"
+
+
+@pytest.mark.asyncio
+async def test_provider_catalog_uses_generic_ready_and_keeps_avatar_alias() -> None:
+    registry = ProviderRegistry(Settings(), install_builtins=False)
+    registry.register(ImageProvider())
+
+    catalog = await registry.catalog(probe=False, capability="image.generate")
+
+    assert catalog[0]["ready"] is True
+    assert catalog[0]["render_ready"] is True

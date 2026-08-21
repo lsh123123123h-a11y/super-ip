@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-21：纠正 Harness 默认假设并加入内容文章链路
+
+- 目标：明确产品自己的 Agent Runtime 才是运行主体，普通内容能力通过 Brain/Handler 执行，Codex/Harness 等外部执行器只作为可选机制。
+- 实际修改：`content.strategy` 与 `content.generate` 改为模型网关配置就绪后安装的 Brain-backed Handler，不再声明为 Harness 能力；新增 `content.article` Product，串联意图、内容策略和文章草稿；Runtime 向后续 Capability 提供最新可用 Artifact；增加内容策略完整性与文章基础质量规则；外部能力命名改为 `ExecutionKind.external` / `bind_external_executor` 并保留旧 `harness` 值和旧绑定方法兼容；Provider 内部就绪字段泛化为 `ready`，对旧 API 继续返回 `render_ready` 兼容字段。
+- 验证结果：隔离 PostgreSQL 完整迁移后 45 项后端测试通过；新增测试覆盖 Brain 内容能力合同、文章/口播脚本输出分型、Artifact 传递、非数字人 Product 计划、Provider `ready` 兼容，以及无 External Executor 的内容 Runtime 完整链路；临时测试数据库已删除。
+- 遗留风险：内容策略与生成尚未使用真实模型凭据做连通验证；内容研究/爆款研究仍缺搜索或平台数据 Tool/MCP；当前内容评价为确定性基础规则，语义质量、事实性与平台适配仍需 Brain + 领域规则组合评价。
+- 可复用经验：Capability 描述业务语义，Brain、Provider、Workflow、Tool/MCP 和 External Executor 都只是其内部执行手段；只有真实安装且依赖就绪的实现才能进入规划目录；多步骤业务必须通过 Artifact 合同传递结果，不能依赖场景专用输入字段。
+
 ## 2026-08-21：通用能力、Workflow 插件与评价返工闭环
 
 - 目标：保留现有 Agent Runtime、ProductionOrder、PlanVersion、AgentOperation、WorkflowRun、Outbox、Lease 等可靠骨架，移除会随新能力增加而持续恶化的数字人默认前提。

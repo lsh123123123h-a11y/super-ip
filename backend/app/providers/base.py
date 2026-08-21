@@ -40,10 +40,16 @@ class ProviderDescriptor:
     category: str
     capabilities: list[str]
     execution_modes: list[str]
-    render_ready: bool
+    ready: bool
     integration_state: str
     reason: str | None = None
     poll_interval_seconds: float = 2.0
+
+    @property
+    def render_ready(self) -> bool:
+        """Compatibility alias for the original avatar-only provider catalog."""
+
+        return self.ready
 
 
 @dataclass(slots=True)

@@ -30,7 +30,7 @@ class ExecutionHandle(BaseModel):
 
 
 class AgentExecutionResult(BaseModel):
-    """Stable result envelope returned by every Harness adapter."""
+    """Stable result envelope returned by an optional external executor adapter."""
 
     model_config = ConfigDict(extra="forbid")
 

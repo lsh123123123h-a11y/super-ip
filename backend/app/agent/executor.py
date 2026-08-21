@@ -1,6 +1,8 @@
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.agent.contracts import CapabilityOutcome, OutcomeStatus
 
 
 class AgentExecutionRequest(BaseModel):
@@ -27,6 +29,25 @@ class ExecutionHandle(BaseModel):
     resume_token: str | None = None
 
 
+class AgentExecutionResult(BaseModel):
+    """Stable result envelope returned by an optional external executor adapter."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: CapabilityOutcome
+    usage: dict[str, int] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_terminal_outcome(self) -> "AgentExecutionResult":
+        if self.outcome.status in {
+            OutcomeStatus.dispatched,
+            OutcomeStatus.waiting,
+        }:
+            raise ValueError("已完成的 Executor 必须返回终态 CapabilityOutcome")
+        return self
+
+
 class AgentExecutorPort(Protocol):
     async def start(self, request: AgentExecutionRequest) -> ExecutionHandle: ...
 
@@ -41,4 +62,7 @@ class AgentExecutorPort(Protocol):
         decision: str,
     ) -> None: ...
 
-    async def collect_result(self, execution_id: str) -> dict[str, Any]: ...
+    async def collect_result(
+        self,
+        execution_id: str,
+    ) -> AgentExecutionResult | dict[str, Any]: ...

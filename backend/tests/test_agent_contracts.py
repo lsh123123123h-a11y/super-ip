@@ -10,6 +10,7 @@ from app.agent.contracts import (
     ExecutionKind,
 )
 from app.capabilities.registry import CapabilityRegistry, get_capability_registry
+from app.core.config import get_settings
 
 
 def _plan_payload() -> dict:
@@ -60,9 +61,18 @@ def test_capability_registry_separates_catalog_from_installed_handlers() -> None
     registry = get_capability_registry()
 
     assert registry.definition("content.strategy") is not None
-    assert registry.handler("content.strategy") is None
+    assert registry.definition("content.strategy").execution_kind == ExecutionKind.inline
     assert registry.handler("avatar.render") is not None
-    assert "content.strategy" not in {item.key for item in registry.installed_catalog()}
+    if get_settings().model_gateway_configured:
+        assert registry.handler("content.strategy") is not None
+        assert "content.strategy" in {
+            item.key for item in registry.installed_catalog()
+        }
+    else:
+        assert registry.handler("content.strategy") is None
+        assert "content.strategy" not in {
+            item.key for item in registry.installed_catalog()
+        }
     assert "avatar.render" in {item.key for item in registry.installed_catalog()}
 
 
@@ -78,6 +88,31 @@ def test_capability_registry_rejects_duplicate_contracts() -> None:
 
     with pytest.raises(ValueError, match="重复注册"):
         registry.register(definition)
+
+
+def test_external_binding_is_not_installed_until_executor_adapter_exists() -> None:
+    registry = CapabilityRegistry()
+    definition = CapabilityDefinition(
+        key="content.research",
+        version="1.0.0",
+        label="内容研究",
+        execution_kind=ExecutionKind.external,
+    )
+    registry.register(definition, source="test.catalog")
+    assert registry.installed_catalog() == []
+
+    registry.bind_external_executor(
+        definition.key,
+        "external.research-agent",
+        metadata={"allowed_tools": ["web.search"]},
+    )
+
+    registration = registry.resolve(definition.key)
+    assert registration is not None
+    assert registration.external_executor_key == "external.research-agent"
+    assert registration.executor_key == "external.research-agent"
+    assert registration.metadata["allowed_tools"] == ["web.search"]
+    assert registry.installed_catalog() == []
 
 
 def test_agent_runtime_does_not_import_workflows_providers_or_product_plugins() -> None:
@@ -101,3 +136,27 @@ def test_agent_runtime_does_not_import_workflows_providers_or_product_plugins() 
         for prefix in forbidden_prefixes
     )
     assert "avatar.render" not in runtime_path.read_text(encoding="utf-8")
+
+
+def test_generic_worker_does_not_contain_domain_or_provider_state_machine() -> None:
+    worker_path = Path(__file__).parents[1] / "app" / "worker.py"
+    source = worker_path.read_text(encoding="utf-8").lower()
+
+    assert "avatar" not in source
+    assert "duix" not in source
+    assert "providerjob" not in source
+
+
+def test_generic_registries_and_workflow_service_do_not_import_avatar_plugins() -> None:
+    app_root = Path(__file__).parents[1] / "app"
+    targets = [
+        app_root / "services" / "workflow_service.py",
+        app_root / "services" / "provider_registry.py",
+        app_root / "product" / "planning.py",
+    ]
+    for target in targets:
+        source = target.read_text(encoding="utf-8").lower()
+        assert "app.providers.duix" not in source
+        assert "app.providers.opentalking" not in source
+        assert "digital_human_plan" not in source
+        assert "avatar_render" not in source

@@ -13,7 +13,12 @@ from app.agent.contracts import (
     DecisionSpec,
     PlanStepSpec,
 )
-from app.agent.executor import AgentExecutionRequest, AgentExecutorPort, ExecutionHandle
+from app.agent.executor import (
+    AgentExecutionRequest,
+    AgentExecutionResult,
+    AgentExecutorPort,
+    ExecutionHandle,
+)
 from app.agent.planner import BrainPlanner, PlanGenerationResult, PlannerPort
 from app.agent.operations import (
     AgentOperationStatus,
@@ -22,9 +27,15 @@ from app.agent.operations import (
     ExecutorDefinition,
     TraceContext,
 )
+from app.agent.evaluation import (
+    EvaluationAction,
+    EvaluationResult,
+    EvaluatorDefinition,
+)
 
 __all__ = [
     "AgentExecutionRequest",
+    "AgentExecutionResult",
     "AgentExecutorPort",
     "AgentIntentSpec",
     "AgentPlanSpec",
@@ -38,6 +49,9 @@ __all__ = [
     "DecisionSpec",
     "ExecutionHandle",
     "ExecutionPolicy",
+    "EvaluationAction",
+    "EvaluationResult",
+    "EvaluatorDefinition",
     "ExecutorDefinition",
     "PlanStepSpec",
     "PlanGenerationResult",

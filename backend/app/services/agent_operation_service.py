@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.contracts import AgentIntentSpec
-from app.agent.executor import AgentExecutionRequest
+from app.agent.executor import AgentExecutionRequest, AgentExecutionResult
 from app.agent.operations import (
     AgentOperationStatus,
     AgentOperationType,
@@ -145,7 +145,7 @@ async def stage_planning_operation(
     planning_context: dict[str, Any] | None = None,
 ) -> tuple[AgentOperation, bool]:
     settings = get_settings()
-    return await stage_agent_operation(
+    operation, created = await stage_agent_operation(
         session,
         order=order,
         run=run,
@@ -164,9 +164,10 @@ async def stage_planning_operation(
             "planning_context": planning_context or {},
         },
     )
+    return operation, created
 
 
-async def stage_executor_operation(
+async def stage_external_executor_operation(
     session: AsyncSession,
     *,
     order: ProductionOrder,
@@ -184,7 +185,7 @@ async def stage_executor_operation(
     effective_policy = policy.model_copy(
         update={"required_permissions": sorted(required_permissions)}
     )
-    return await stage_agent_operation(
+    operation, created = await stage_agent_operation(
         session,
         order=order,
         run=run,
@@ -196,12 +197,45 @@ async def stage_executor_operation(
         executor_key=executor_key,
         trace=trace,
     )
+    operation.plan_version_id = request.plan_version_id
+    return operation, created
+
+
+async def stage_executor_operation(
+    session: AsyncSession,
+    *,
+    order: ProductionOrder,
+    run: AgentRun,
+    executor_key: str,
+    request: AgentExecutionRequest,
+    idempotency_key: str,
+    policy: ExecutionPolicy,
+    trace: TraceContext | None = None,
+) -> tuple[AgentOperation, bool]:
+    """Compatibility alias for the v1 external-executor staging API."""
+
+    return await stage_external_executor_operation(
+        session,
+        order=order,
+        run=run,
+        executor_key=executor_key,
+        request=request,
+        idempotency_key=idempotency_key,
+        policy=policy,
+        trace=trace,
+    )
 
 
 def _production_request(order: ProductionOrder, run: AgentRun) -> ProductionOrderCreate:
     context = run.context_snapshot or {}
+    inputs = dict(context.get("inputs") or {})
     return ProductionOrderCreate(
         project_id=order.project_id,
+        product_key=str(
+            context.get("product_key")
+            or inputs.get("_product_key")
+            or "digital_human.video"
+        ),
         title=order.title,
         intent_text=order.intent_text,
         automation_mode=order.automation_mode,
@@ -210,7 +244,7 @@ def _production_request(order: ProductionOrder, run: AgentRun) -> ProductionOrde
         budget_limit=order.budget_limit,
         max_auto_rework=order.max_auto_rework,
         content_item_id=order.content_item_id,
-        inputs=dict(context.get("inputs") or {}),
+        inputs=inputs,
     )
 
 
@@ -239,7 +273,7 @@ async def _execute_planning(
     )
 
 
-async def _execute_harness(
+async def _execute_external_executor(
     operation: AgentOperation,
 ) -> OperationExecutionResult:
     if not operation.executor_key:
@@ -261,16 +295,19 @@ async def _execute_harness(
         )
     state = handle.state.lower()
     if state in {"succeeded", "completed"}:
-        result = await asyncio.wait_for(
+        raw_result = await asyncio.wait_for(
             executor.collect_result(handle.execution_id),
             timeout=operation.timeout_seconds,
         )
-        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        result = AgentExecutionResult.model_validate(raw_result)
         return OperationExecutionResult(
             status=AgentOperationStatus.succeeded,
             external_execution_id=handle.execution_id,
-            usage={key: int(value) for key, value in usage.items() if isinstance(value, int)},
-            metadata={"result_keys": sorted(result)},
+            usage=result.usage,
+            metadata={
+                "capability_outcome": result.outcome.model_dump(mode="json"),
+                "executor_metadata": result.metadata,
+            },
         )
     if state in {"failed", "canceled", "cancelled"}:
         raise PermanentOperationError(f"Executor 返回终态：{state}")
@@ -544,7 +581,7 @@ async def run_agent_operation_once(operation_id: str, worker_id: str = "agent-wo
         if operation.operation_type == AgentOperationType.planning.value:
             result = await _execute_planning(operation, order, run)
         elif operation.operation_type == AgentOperationType.executor.value:
-            result = await _execute_harness(operation)
+            result = await _execute_external_executor(operation)
         else:
             raise PermanentOperationError(f"未知 AgentOperation 类型：{operation.operation_type}")
     except Exception as exc:  # noqa: BLE001
@@ -605,6 +642,20 @@ async def run_agent_operation_once(operation_id: str, worker_id: str = "agent-wo
                 if was_paused:
                     order.status = ProductionOrderStatus.paused
                     run.status = AgentRunStatus.planning
+            elif locked.operation_type == AgentOperationType.executor.value:
+                session.add(
+                    OutboxEvent(
+                        tenant_id=order.tenant_id,
+                        aggregate_type="production_order",
+                        aggregate_id=order.id,
+                        topic="agent.run.requested",
+                        payload={
+                            "production_order_id": order.id,
+                            "agent_run_id": run.id,
+                        },
+                        dedupe_key=f"agent-observe-operation:{locked.id}:succeeded",
+                    )
+                )
             locked.status = AgentOperationStatus.succeeded.value
             locked.finished_at = datetime.now(UTC)
             await _append_operation_event(

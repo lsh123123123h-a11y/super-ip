@@ -11,6 +11,8 @@ class ContractModel(BaseModel):
 class ExecutionKind(str, Enum):
     inline = "inline"
     durable = "durable"
+    external = "external"
+    # Legacy contract value kept for plans/extensions created before v1.1.
     harness = "harness"
 
 

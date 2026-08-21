@@ -20,7 +20,7 @@ async def test_duix_submit_and_success_mapping() -> None:
         base_url="http://duix.local/easy",
         transport=httpx.MockTransport(handler),
     ) as client:
-        provider = DuixProvider(Settings(), client)
+        provider = DuixProvider(Settings(duix_mock=False), client)
         submission = await provider.submit_render(
             external_job_id="job-1",
             request=AvatarRenderInput(
@@ -46,7 +46,10 @@ async def test_duix_failure_mapping() -> None:
         lambda _: httpx.Response(200, json={"code": 10003, "msg": "render failed"})
     )
     async with httpx.AsyncClient(base_url="http://duix.local/easy", transport=transport) as client:
-        status = await DuixProvider(Settings(), client).query_render("job-2")
+        status = await DuixProvider(
+            Settings(duix_mock=False),
+            client,
+        ).query_render("job-2")
 
     assert status.state == ProviderJobState.failed
     assert status.message == "render failed"
@@ -58,7 +61,7 @@ async def test_duix_missing_job_is_treated_as_short_lived_processing_state() -> 
         lambda _: httpx.Response(200, json={"code": 10004, "msg": "任务不存在", "data": {}})
     )
     async with httpx.AsyncClient(base_url="http://duix.local/easy", transport=transport) as client:
-        provider = DuixProvider(Settings(), client)
+        provider = DuixProvider(Settings(duix_mock=False), client)
         status = await provider.query_render("job-not-yet-visible")
         probe = await provider.probe()
 

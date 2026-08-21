@@ -35,7 +35,7 @@ from app.schemas.agent import (
     ProductionOrderOverview,
     ResolveDecisionRequest,
 )
-from app.product.digital_human_plan import build_intent_spec
+from app.product.registry import get_product_registry
 from app.services.agent_operation_service import stage_planning_operation
 from app.services.identity_service import ensure_principal_records
 
@@ -51,6 +51,9 @@ def _production_order_request(
 ) -> ProductionOrderCreate:
     return ProductionOrderCreate(
         project_id=order.project_id,
+        product_key=str(
+            (inputs.get("_product_key") or "digital_human.video")
+        ),
         title=order.title,
         intent_text=order.intent_text,
         automation_mode=order.automation_mode,
@@ -151,6 +154,7 @@ async def create_production_order(
     payload: ProductionOrderCreate,
 ) -> tuple[ProductionOrderOverview, bool]:
     await ensure_principal_records(session, principal)
+    product = get_product_registry().require(payload.product_key)
     request_hash = _request_hash(payload)
     existing = await session.scalar(
         select(ProductionOrder).where(
@@ -181,20 +185,17 @@ async def create_production_order(
             tenant_id=principal.tenant_id,
             project_id=project.id,
             title=payload.content_item_title or payload.title or payload.intent_text.strip()[:80],
+            content_type=payload.product_key,
         )
         session.add(content_item)
         await session.flush()
 
-    intent = build_intent_spec(payload)
+    intent = product.build_intent(payload)
     intent_spec = intent.model_dump(mode="json")
     internal_inputs = dict(payload.inputs)
-    asset_roles = {
-        "audio_asset_id": "voice_audio",
-        "avatar_asset_id": "avatar_reference",
-    }
     resolved_assets: list[tuple[Asset, str]] = []
-    for input_key, role in asset_roles.items():
-        asset_id = payload.inputs.get(input_key)
+    for asset_input in product.asset_inputs:
+        asset_id = payload.inputs.get(asset_input.input_key)
         if not asset_id:
             continue
         asset = await session.scalar(
@@ -204,11 +205,14 @@ async def create_production_order(
             raise LookupError(str(asset_id))
         if asset.project_id and asset.project_id != project.id:
             raise ValueError("生产单不能引用其他项目的素材")
-        resolved_assets.append((asset, role))
-        if input_key == "audio_asset_id":
-            internal_inputs["audio_path"] = asset.provider_path
-        elif input_key == "avatar_asset_id":
-            internal_inputs["avatar_video_path"] = asset.provider_path
+        if not asset.media_type.startswith(asset_input.media_type_prefix):
+            raise ValueError(
+                f"{asset_input.input_key} 素材类型必须以"
+                f" {asset_input.media_type_prefix} 开头"
+            )
+        resolved_assets.append((asset, asset_input.role))
+        internal_inputs[asset_input.runtime_key] = asset.provider_path
+    internal_inputs["_product_key"] = payload.product_key
     order = ProductionOrder(
         tenant_id=principal.tenant_id,
         project_id=project.id,
@@ -249,6 +253,7 @@ async def create_production_order(
         status=AgentRunStatus.planning,
         context_snapshot={
             "tenant_id": principal.tenant_id,
+            "product_key": payload.product_key,
             "project": {"id": project.id, "name": project.name, "goal": project.goal},
             "ip_profile_snapshot_id": snapshot.id if snapshot else None,
             "intent_spec": intent_spec,
@@ -502,6 +507,9 @@ async def update_production_order_inputs(
         raise RuntimeError("生产单缺少 PlanVersion")
 
     update_values = payload.model_dump(exclude_none=True)
+    generic_values = update_values.pop("inputs", {})
+    if isinstance(generic_values, dict):
+        update_values = {**generic_values, **update_values}
     script = update_values.get("script")
     if isinstance(script, str):
         script = script.strip()
@@ -512,12 +520,15 @@ async def update_production_order_inputs(
 
     context = dict(run.context_snapshot or {})
     inputs = dict(context.get("inputs") or {})
+    product_key = str(
+        context.get("product_key")
+        or inputs.get("_product_key")
+        or "digital_human.video"
+    )
+    product = get_product_registry().require(product_key)
     resolved_assets: list[tuple[Asset, str, str]] = []
-    for input_key, role, media_prefix in (
-        ("audio_asset_id", "voice_audio", "audio/"),
-        ("avatar_asset_id", "avatar_reference", "video/"),
-    ):
-        asset_id = update_values.get(input_key)
+    for asset_input in product.asset_inputs:
+        asset_id = update_values.get(asset_input.input_key)
         if not asset_id:
             continue
         asset = await session.scalar(
@@ -531,29 +542,21 @@ async def update_production_order_inputs(
             raise LookupError(str(asset_id))
         if asset.project_id and asset.project_id != order.project_id:
             raise ValueError("生产单不能引用其他项目的素材")
-        if not asset.media_type.startswith(media_prefix):
-            expected = "音频" if media_prefix == "audio/" else "视频"
-            raise ValueError(f"{input_key} 必须引用{expected}素材")
-        path_key = "audio_path" if input_key == "audio_asset_id" else "avatar_video_path"
+        if not asset.media_type.startswith(asset_input.media_type_prefix):
+            raise ValueError(
+                f"{asset_input.input_key} 素材类型必须以"
+                f" {asset_input.media_type_prefix} 开头"
+            )
         if not asset.provider_path:
             raise ValueError("素材尚未准备好 Provider 内部引用")
-        inputs[path_key] = asset.provider_path
-        resolved_assets.append((asset, role, input_key))
+        inputs[asset_input.runtime_key] = asset.provider_path
+        resolved_assets.append(
+            (asset, asset_input.role, asset_input.input_key)
+        )
 
     inputs.update(update_values)
-    required = {
-        "script": bool(inputs.get("script")),
-        "audio_asset_id": bool(inputs.get("audio_path")),
-        "avatar_asset_id": bool(inputs.get("avatar_video_path")),
-    }
-    missing = [key for key, present in required.items() if not present]
-    if missing:
-        labels = {
-            "script": "口播脚本",
-            "audio_asset_id": "配音素材",
-            "avatar_asset_id": "数字人参考视频",
-        }
-        raise ValueError("请同时补齐：" + "、".join(labels[key] for key in missing))
+    inputs["_product_key"] = product_key
+    product.validate_resume_inputs(inputs)
 
     for asset, role, _ in resolved_assets:
         existing_ref = await session.scalar(
@@ -574,9 +577,10 @@ async def update_production_order_inputs(
             )
 
     context["inputs"] = inputs
+    context["product_key"] = product_key
     run.context_snapshot = context
     synthetic_request = _production_order_request(order, inputs)
-    intent_spec = build_intent_spec(synthetic_request).model_dump(mode="json")
+    intent_spec = product.build_intent(synthetic_request).model_dump(mode="json")
 
     asset_ids = set(order.intent_spec.get("input_asset_ids") or [])
     asset_ids.update(asset.id for asset, _, _ in resolved_assets)

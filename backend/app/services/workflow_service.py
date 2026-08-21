@@ -1,3 +1,5 @@
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,40 +13,65 @@ from app.models.orchestration import (
     WorkflowStatus,
     WorkflowStep,
 )
-from app.schemas.workflows import DigitalHumanRenderRequest
 from app.services.provider_registry import ProviderRegistry, get_provider_registry
+from app.workflows.registry import WorkflowRegistry, get_workflow_registry
 
-
-WORKFLOW_STEPS = [
-    ("validate", "检查素材"),
-    ("avatar_render", "数字人渲染"),
-    ("persist_result", "保存成片"),
-]
-
-
-async def create_workflow(
+async def create_capability_workflow(
     session: AsyncSession,
     *,
     owner_id: str,
     tenant_id: str = "local-tenant",
     idempotency_key: str,
-    payload: DigitalHumanRenderRequest,
+    task_type: str,
+    capability: str,
+    input_payload: dict[str, Any],
+    requested_provider: str = "auto",
+    requested_execution: str = "auto",
     production_order_id: str | None = None,
     plan_version_id: str | None = None,
     provider_registry: ProviderRegistry | None = None,
+    workflow_registry: WorkflowRegistry | None = None,
     commit: bool = True,
 ) -> tuple[WorkflowRun, bool]:
-    existing = await get_workflow_by_idempotency(session, owner_id, idempotency_key)
+    definitions = workflow_registry or get_workflow_registry()
+    definition = definitions.resolve(task_type)
+    if definition is None:
+        raise ValueError(f"Workflow 类型尚未注册：{task_type}")
+    if definition.capability != capability:
+        raise ValueError(
+            f"Workflow {task_type} 不承载能力 {capability}"
+        )
+    validated_input = definition.input_model.model_validate(input_payload)
+    normalized_input = validated_input.model_dump(mode="json")
+    existing = await get_workflow_by_idempotency(
+        session,
+        owner_id,
+        idempotency_key,
+    )
     if existing:
+        existing_input = definition.input_model.model_validate(
+            existing.input_payload
+        ).model_dump(mode="json")
+        if (
+            existing.task_type != task_type
+            or existing.capability != capability
+            or existing.production_order_id != production_order_id
+            or existing.plan_version_id != plan_version_id
+            or existing_input != normalized_input
+        ):
+            raise ValueError(
+                "同一 Idempotency-Key 不能提交不同的 Workflow 请求"
+            )
         return existing, False
 
-    registry = provider_registry or get_provider_registry()
-    route = await registry.decide_live(
-        requested_provider=payload.provider,
-        requested_execution=payload.execution_mode,
+    providers = provider_registry or get_provider_registry()
+    route = await providers.decide_live(
+        capability=capability,
+        requested_provider=requested_provider,
+        requested_execution=requested_execution,
     )
-    input_payload = payload.model_dump()
-    input_payload.update(
+    stored_input = dict(normalized_input)
+    stored_input.update(
         {
             "selected_provider": route.selected_provider,
             "selected_execution": route.selected_execution,
@@ -57,21 +84,24 @@ async def create_workflow(
         tenant_id=tenant_id,
         production_order_id=production_order_id,
         plan_version_id=plan_version_id,
+        task_type=task_type,
+        capability=capability,
         idempotency_key=idempotency_key,
-        input_payload=input_payload,
+        input_payload=stored_input,
         status=WorkflowStatus.queued,
         progress=0,
     )
     workflow.steps = [
         WorkflowStep(
-            step_key=key,
-            label=label,
+            step_key=step.key,
+            label=step.label,
             position=index,
             status=StepStatus.pending,
-            capability="avatar.render" if key == "avatar_render" else None,
-            expected_artifact="avatar_video" if key == "avatar_render" else None,
+            capability=step.capability,
+            depends_on=list(step.depends_on),
+            expected_artifact=step.expected_artifact,
         )
-        for index, (key, label) in enumerate(WORKFLOW_STEPS)
+        for index, step in enumerate(definition.steps)
     ]
     workflow.route_decisions = [
         WorkflowRouteDecision(

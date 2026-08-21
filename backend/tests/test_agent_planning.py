@@ -73,7 +73,8 @@ def test_product_fallback_plan_only_uses_installed_execution_bindings() -> None:
     assert {step.capability for step in plan.steps}.issubset(installed)
     assert [step.key for step in plan.steps] == [
         "intent.normalize",
-        "script.accept_input",
+        "strategy.generate",
+        "script.generate",
         "audio.evaluate",
         "avatar.render",
     ]

@@ -10,7 +10,6 @@ from app.agent.contracts import (
     ExecutionKind,
 )
 from app.capabilities.registry import CapabilityRegistry, get_capability_registry
-from app.core.config import get_settings
 
 
 def _plan_payload() -> dict:
@@ -63,16 +62,11 @@ def test_capability_registry_separates_catalog_from_installed_handlers() -> None
     assert registry.definition("content.strategy") is not None
     assert registry.definition("content.strategy").execution_kind == ExecutionKind.inline
     assert registry.handler("avatar.render") is not None
-    if get_settings().model_gateway_configured:
-        assert registry.handler("content.strategy") is not None
-        assert "content.strategy" in {
-            item.key for item in registry.installed_catalog()
-        }
-    else:
-        assert registry.handler("content.strategy") is None
-        assert "content.strategy" not in {
-            item.key for item in registry.installed_catalog()
-        }
+    assert registry.handler("content.strategy") is not None
+    assert "content.strategy" in {
+        item.key for item in registry.installed_catalog()
+    }
+    assert registry.resolve("content.strategy").metadata == {"requires": ["brain"]}
     assert "avatar.render" in {item.key for item in registry.installed_catalog()}
 
 

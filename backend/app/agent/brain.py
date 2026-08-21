@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +24,8 @@ class StructuredBrainResponse(BaseModel):
     gateway_ref: str
     usage: dict[str, int] = Field(default_factory=dict)
     raw_response_id: str | None = None
+    reported_cost: Decimal | None = None
+    cost_currency: str | None = None
 
 
 class BrainPort(Protocol):

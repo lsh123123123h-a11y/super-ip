@@ -43,6 +43,8 @@ class BrainPlanner(PlannerPort):
         evaluators: list[EvaluatorDefinition] | None = None,
         context: dict[str, Any] | None = None,
     ) -> PlanGenerationResult:
+        resolved_context = dict(context or {})
+        invocation_metadata = dict(resolved_context.pop("_invocation_metadata", {}) or {})
         response = await self.brain.complete_structured(
             StructuredBrainRequest(
                 purpose="production_plan",
@@ -59,9 +61,11 @@ class BrainPlanner(PlannerPort):
                     "evaluators": [
                         item.model_dump(mode="json") for item in (evaluators or [])
                     ],
-                    "context": context or {},
+                    "context": resolved_context,
                 },
                 output_schema=AgentPlanSpec.model_json_schema(),
+                model_alias="reasoning.default",
+                metadata=invocation_metadata,
             )
         )
         plan = AgentPlanSpec.model_validate(response.output)

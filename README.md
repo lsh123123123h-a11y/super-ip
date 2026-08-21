@@ -60,9 +60,12 @@ python -m venv .venv
 
 ### 使用云端模型大脑
 
-模型、渠道和密钥由内部 New API 管理，星流只配置一个 OpenAI-compatible 网关入口：
+日常配置从管理端 `/admin` 的「AI 能力与通道」完成：填写 New API 地址与 Token、测试连接、选择模型并绑定 `reasoning.default` / `writing.default` 等 alias。配置保存到 PostgreSQL 后会被下一次 Brain 调用动态读取，不需要重启 API 或 Worker。
+
+`.env` 只保留系统级密钥加密主密钥，以及首次部署/故障回退时可选的 OpenAI-compatible bootstrap 网关：
 
 ```dotenv
+AI_PROVIDER_SECRET_KEY=replace-with-one-stable-fernet-key
 MODEL_GATEWAY_BASE_URL=https://your-new-api.example/v1
 MODEL_GATEWAY_API_KEY=replace-with-server-side-key
 MODEL_GATEWAY_DEFAULT_MODEL=your-internal-model-name
@@ -73,7 +76,7 @@ PLANNING_TIMEOUT_SECONDS=180
 PLANNING_MAX_ATTEMPTS=3
 ```
 
-密钥只放后端环境变量，不进入浏览器、生产单或计划。未完整配置时使用合同化模板规划器；配置后 `BrainPlanner` 生成的结果仍必须通过 `agent.plan.v1` 校验。生产单 API 不等待模型响应：规划被保存为 `AgentOperation`，由 Worker 异步执行、租约恢复和有界重试。
+管理员提交的 Provider Token 使用 Fernet 加密后入库，读取接口只返回末四位提示，不返回明文或密文。`AI_PROVIDER_SECRET_KEY` 必须由 API 与 Worker 共享并稳定保管；丢失后数据库中的 Token 无法解密。未配置数据库 Provider 或 bootstrap 网关时使用合同化模板规划器；配置后 `BrainPlanner` 结果仍必须通过 `agent.plan.v1` 校验。每次真实调用都会保存模型 alias、Provider、Token、延迟、请求 ID、成功/失败和安全错误摘要；只有网关响应明确提供成本时才记录成本。
 
 ### 使用 Duix
 
@@ -119,6 +122,10 @@ OpenTalking 先以第二引擎接入。配置 `OPENTALKING_BASE_URL` 后，管�
 ## 执行网关与兼容接口
 
 - `GET /health`：业务 API 存活检查。
+- `GET/POST/PUT /v1/admin/ai-providers`：AI Provider 与模型 alias 控制面（租户 owner/admin）。
+- `POST /v1/admin/ai-providers/test-connection`：保存前测试连接并读取真实模型目录。
+- `POST /v1/admin/ai-providers/{id}/test`：使用已加密保存的 Token 复检连接。
+- `GET /v1/admin/ai-providers/invocations`：Super-IP 业务级 Brain 调用事实与用量。
 - `GET /v1/providers`：数字人 Provider、健康、能力、执行方式和默认路由。
 - `POST /v1/providers/route-preview`：在不创建任务时预览实际路由决策。
 - `POST /v1/assets/upload`：上传 Duix 可读取的音视频素材。
@@ -136,7 +143,7 @@ OpenTalking 先以第二引擎接入。配置 `OPENTALKING_BASE_URL` 后，管�
 
 ## 当前能力边界
 
-已真实运行：生产单、异步可恢复规划、计划版本、决策、Outbox 恢复、数字人异步执行、产物版本、审核和租户边界查询。Agent Core 已改为按能力合同调度，不包含数字人口播专用分支。New API 大脑端口已接通合同与异步 Operation，但尚未配置真实云密钥；Harness Executor Registry 已建立但尚未安装真实 Adapter；未安装的业务能力会进入 `manual_intervention`，不会伪造已完成。
+已真实运行：生产单、异步可恢复规划、计划版本、决策、Outbox 恢复、数字人异步执行、产物版本、审核、租户边界，以及数据库驱动的 New API 控制面。Agent Core 按能力合同调度；普通 Brain 调用不依赖 External Executor。当前本地环境尚未录入真实 New API Token，因此没有伪造云端调用或用量；管理员保存真实网关后，规划与内容能力会动态使用该配置。
 
 ## 独立部署说明
 

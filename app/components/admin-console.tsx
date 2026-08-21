@@ -10,13 +10,13 @@ type AdminView = "overview" | "tenants" | "ledger" | "providers" | "routing" | "
 
 const adminNavigation: Array<{ label: string; items: Array<{ id: AdminView; icon: string; title: string }> }> = [
   { label: "运营中心", items: [{ id: "overview", icon: "⌂", title: "经营总览" }, { id: "tenants", icon: "人", title: "租户与用户" }, { id: "ledger", icon: "账", title: "套餐与账本" }] },
-  { label: "能力平台", items: [{ id: "providers", icon: "能", title: "能力与通道" }, { id: "routing", icon: "路", title: "路由策略" }, { id: "workers", icon: "节", title: "媒体 Worker" }] },
+  { label: "能力平台", items: [{ id: "providers", icon: "能", title: "AI 能力与通道" }, { id: "routing", icon: "路", title: "媒体路由策略" }, { id: "workers", icon: "节", title: "媒体 Worker" }] },
   { label: "治理与运维", items: [{ id: "operations", icon: "任", title: "任务运维" }, { id: "consent", icon: "权", title: "资产与授权" }, { id: "governance", icon: "盾", title: "内容治理" }, { id: "configuration", icon: "配", title: "配置中心" }, { id: "audit", icon: "审", title: "审计与客服" }] },
 ];
 
 const adminTitles: Record<AdminView, [string, string]> = {
   overview: ["OPERATION OVERVIEW", "经营总览"], tenants: ["TENANT & IDENTITY", "租户与用户"], ledger: ["PLAN & LEDGER", "套餐与账本"],
-  providers: ["CAPABILITY CONTROL", "能力与通道"], routing: ["ROUTING POLICY", "路由策略"], workers: ["MEDIA WORKERS", "数字人 / 媒体 Worker"],
+  providers: ["AI PROVIDER CONTROL", "AI 能力与通道"], routing: ["MEDIA ROUTING POLICY", "媒体路由策略"], workers: ["MEDIA WORKERS", "数字人 / 媒体 Worker"],
   operations: ["TASK OPERATIONS", "任务运维"], consent: ["ASSET & CONSENT", "资产与授权"], governance: ["CONTENT GOVERNANCE", "内容治理"],
   configuration: ["SYSTEM CONFIGURATION", "配置中心"], audit: ["AUDIT & SUPPORT", "审计与客服"],
 };

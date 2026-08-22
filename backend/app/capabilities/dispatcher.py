@@ -67,9 +67,9 @@ class CapabilityDispatcher:
         if operation.status in {
             AgentOperationStatus.succeeded.value,
             AgentOperationStatus.failed_final.value,
-            AgentOperationStatus.canceled.value,
         }:
             return
+        already_canceled = operation.status == AgentOperationStatus.canceled.value
         if operation.external_execution_id:
             from app.executors.registry import get_executor_registry
 
@@ -79,12 +79,13 @@ class CapabilityDispatcher:
             )
             if executor is not None:
                 await executor.interrupt(operation.external_execution_id)
-        operation.status = AgentOperationStatus.canceled.value
-        operation.finished_at = datetime.now(UTC)
-        operation.fence_token += 1
-        operation.lease_owner = None
-        operation.lease_expires_at = None
-        operation.heartbeat_at = None
+        if not already_canceled:
+            operation.status = AgentOperationStatus.canceled.value
+            operation.finished_at = datetime.now(UTC)
+            operation.fence_token += 1
+            operation.lease_owner = None
+            operation.lease_expires_at = None
+            operation.heartbeat_at = None
 
     async def _execute_with_external_executor(
         self,

@@ -13,6 +13,8 @@ from app.models.agent import (
     AgentOperation,
     AgentRun,
     AgentRunStatus,
+    AgentStepExecution,
+    AgentStepExecutionStatus,
     Artifact,
     ArtifactVersion,
     ArtifactVersionStatus,
@@ -38,6 +40,7 @@ from app.schemas.agent import (
 )
 from app.product.registry import get_product_registry
 from app.services.agent_operation_service import stage_planning_operation
+from app.services.agent_step_service import TERMINAL_STEP_STATUSES
 from app.services.identity_service import ensure_principal_records
 
 
@@ -390,10 +393,12 @@ async def resolve_decision(
     payload: ResolveDecisionRequest,
 ) -> ProductionOrderOverview:
     decision = await session.scalar(
-        select(DecisionRequest).where(
+        select(DecisionRequest)
+        .where(
             DecisionRequest.id == decision_id,
             DecisionRequest.tenant_id == principal.tenant_id,
         )
+        .with_for_update()
     )
     if decision is None:
         raise LookupError(decision_id)
@@ -412,12 +417,28 @@ async def resolve_decision(
             principal=principal,
             order_id=decision.production_order_id,
             payload=inputs,
+            resume_decision_id=decision.id,
         )
 
     order = await get_production_order(session, principal, decision.production_order_id)
     run = await session.get(AgentRun, decision.agent_run_id)
     if run is None:
         raise RuntimeError("决策请求缺少 AgentRun")
+    step_execution = await session.scalar(
+        select(AgentStepExecution)
+        .where(
+            AgentStepExecution.decision_request_id == decision.id,
+            AgentStepExecution.tenant_id == principal.tenant_id,
+        )
+        .with_for_update()
+    )
+    if order.status in {
+        ProductionOrderStatus.canceling,
+        ProductionOrderStatus.canceled,
+        ProductionOrderStatus.succeeded,
+        ProductionOrderStatus.failed_final,
+    }:
+        raise ValueError("当前生产单不能处理该决策")
     now = datetime.now(UTC)
     decision.status = DecisionStatus.resolved
     decision.resolved_option = payload.option_key
@@ -433,7 +454,66 @@ async def resolve_decision(
         )
     )
 
-    if payload.option_key == "approve_plan":
+    if payload.option_key == "cancel_order":
+        order.status = ProductionOrderStatus.canceling
+        session.add(
+            OutboxEvent(
+                tenant_id=principal.tenant_id,
+                aggregate_type="production_order",
+                aggregate_id=order.id,
+                topic="agent.cancel.requested",
+                payload={"production_order_id": order.id, "agent_run_id": run.id},
+                dedupe_key=f"agent-cancel:{run.id}",
+            )
+        )
+    elif step_execution is not None:
+        if step_execution.status != AgentStepExecutionStatus.awaiting_decision.value:
+            raise ValueError("对应步骤不再等待该决策")
+        resolution = {
+            "decision_id": decision.id,
+            "option_key": payload.option_key,
+            "payload": payload.payload,
+            "resolved_at": now.isoformat(),
+        }
+        step_execution.runtime_binding_payload = {
+            **dict(step_execution.runtime_binding_payload or {}),
+            "decision_resolution": resolution,
+        }
+        step_execution.status = AgentStepExecutionStatus.pending.value
+        step_execution.fence_token += 1
+        step_execution.lease_owner = None
+        step_execution.lease_expires_at = None
+        step_execution.heartbeat_at = None
+        step_execution.next_wakeup_at = now
+        step_execution.error_code = None
+        step_execution.error_message = None
+        step_execution.finished_at = None
+        order.status = ProductionOrderStatus.queued
+        run.status = AgentRunStatus.running
+        run.stop_reason = None
+        session.add(
+            OutboxEvent(
+                tenant_id=principal.tenant_id,
+                aggregate_type="production_order",
+                aggregate_id=order.id,
+                topic="agent.run.requested",
+                payload={"production_order_id": order.id, "agent_run_id": run.id},
+                dedupe_key=f"agent-step-decision-resume:{decision.id}",
+            )
+        )
+        session.add(
+            AgentEvent(
+                tenant_id=principal.tenant_id,
+                production_order_id=order.id,
+                agent_run_id=run.id,
+                event_type="agent.step.decision_resume_scheduled",
+                payload={
+                    "agent_step_execution_id": step_execution.id,
+                    **resolution,
+                },
+            )
+        )
+    elif payload.option_key == "approve_plan":
         order.status = ProductionOrderStatus.queued
         run.status = AgentRunStatus.running
         session.add(
@@ -460,12 +540,6 @@ async def resolve_decision(
                 "change_request": payload.payload,
             },
         )
-    elif payload.option_key == "cancel_order":
-        order.status = ProductionOrderStatus.canceled
-        run.status = AgentRunStatus.canceled
-        run.stop_reason = "user_canceled"
-        run.finished_at = now
-
     await session.commit()
     return await get_production_order_overview(session, principal, order.id)
 
@@ -476,6 +550,7 @@ async def update_production_order_inputs(
     principal: Principal,
     order_id: str,
     payload: ProductionOrderInputsUpdate,
+    resume_decision_id: str | None = None,
 ) -> ProductionOrderOverview:
     order = await get_production_order(session, principal, order_id)
     if order.status not in {
@@ -584,27 +659,124 @@ async def update_production_order_inputs(
     asset_ids = set(order.intent_spec.get("input_asset_ids") or [])
     asset_ids.update(asset.id for asset, _, _ in resolved_assets)
     order.intent_spec = {**intent_spec, "input_asset_ids": sorted(asset_ids)}
+    decision_query = select(DecisionRequest).where(
+        DecisionRequest.production_order_id == order.id,
+        DecisionRequest.tenant_id == principal.tenant_id,
+        DecisionRequest.status == DecisionStatus.pending,
+        DecisionRequest.reason_code.in_(
+            ["MISSING_REQUIRED_ASSET", "MISSING_REQUIRED_INPUT"]
+        ),
+    )
+    if resume_decision_id is not None:
+        decision_query = decision_query.where(
+            DecisionRequest.id == resume_decision_id
+        )
     pending_decisions = list(
-        (
-            await session.execute(
-                select(DecisionRequest).where(
-                    DecisionRequest.production_order_id == order.id,
-                    DecisionRequest.status == DecisionStatus.pending,
-                    DecisionRequest.reason_code.in_(
-                        ["MISSING_REQUIRED_ASSET", "MISSING_REQUIRED_INPUT"]
-                    ),
-                )
-            )
-        ).scalars()
+        (await session.execute(decision_query.with_for_update())).scalars()
     )
     now = datetime.now(UTC)
+    resolution_payload = {
+        key: value for key, value in update_values.items() if not key.endswith("_path")
+    }
     for decision in pending_decisions:
         decision.status = DecisionStatus.resolved
         decision.resolved_option = "open_assets"
-        decision.resolution_payload = {
-            key: value for key, value in update_values.items() if not key.endswith("_path")
-        }
+        decision.resolution_payload = resolution_payload
         decision.resolved_at = now
+        session.add(
+            AgentEvent(
+                tenant_id=principal.tenant_id,
+                production_order_id=order.id,
+                agent_run_id=run.id,
+                event_type="decision.resolved",
+                payload={
+                    "decision_id": decision.id,
+                    "option": "open_assets",
+                    "payload": resolution_payload,
+                },
+            )
+        )
+
+    step_executions: list[AgentStepExecution] = []
+    if pending_decisions:
+        step_executions = list(
+            await session.scalars(
+                select(AgentStepExecution)
+                .where(
+                    AgentStepExecution.decision_request_id.in_(
+                        [decision.id for decision in pending_decisions]
+                    ),
+                    AgentStepExecution.tenant_id == principal.tenant_id,
+                    AgentStepExecution.status
+                    == AgentStepExecutionStatus.awaiting_decision.value,
+                )
+                .with_for_update()
+            )
+        )
+
+    if step_executions:
+        decision_by_id = {decision.id: decision for decision in pending_decisions}
+        for execution in step_executions:
+            decision = decision_by_id[execution.decision_request_id]
+            resolution = {
+                "decision_id": decision.id,
+                "option_key": "open_assets",
+                "payload": resolution_payload,
+                "resolved_at": now.isoformat(),
+            }
+            execution.input_payload = dict(inputs)
+            execution.runtime_binding_payload = {
+                **dict(execution.runtime_binding_payload or {}),
+                "decision_resolution": resolution,
+            }
+            execution.status = AgentStepExecutionStatus.pending.value
+            execution.fence_token += 1
+            execution.lease_owner = None
+            execution.lease_expires_at = None
+            execution.heartbeat_at = None
+            execution.next_wakeup_at = now
+            execution.error_code = None
+            execution.error_message = None
+            execution.finished_at = None
+            session.add(
+                OutboxEvent(
+                    tenant_id=principal.tenant_id,
+                    aggregate_type="production_order",
+                    aggregate_id=order.id,
+                    topic="agent.run.requested",
+                    payload={"production_order_id": order.id, "agent_run_id": run.id},
+                    dedupe_key=f"agent-step-decision-resume:{decision.id}",
+                )
+            )
+            session.add(
+                AgentEvent(
+                    tenant_id=principal.tenant_id,
+                    production_order_id=order.id,
+                    agent_run_id=run.id,
+                    event_type="agent.step.decision_resume_scheduled",
+                    payload={"agent_step_execution_id": execution.id, **resolution},
+                )
+            )
+        order.status = ProductionOrderStatus.queued
+        run.status = AgentRunStatus.running
+        run.stop_reason = None
+        run.finished_at = None
+        session.add(
+            AgentEvent(
+                tenant_id=principal.tenant_id,
+                production_order_id=order.id,
+                agent_run_id=run.id,
+                event_type="production_order.inputs_supplied",
+                payload={
+                    "fields": sorted(update_values),
+                    "resumed_step_execution_ids": [
+                        execution.id for execution in step_executions
+                    ],
+                },
+            )
+        )
+        await session.commit()
+        return await get_production_order_overview(session, principal, order.id)
 
     order.status = ProductionOrderStatus.planning
     run.status = AgentRunStatus.planning
@@ -757,6 +929,37 @@ async def command_production_order(
                 operation.lease_owner = None
                 operation.lease_expires_at = None
                 operation.heartbeat_at = None
+                operation.next_wakeup_at = None
+            executions = list(
+                await session.scalars(
+                    select(AgentStepExecution).where(
+                        AgentStepExecution.production_order_id == order.id,
+                        AgentStepExecution.status.not_in(TERMINAL_STEP_STATUSES),
+                    )
+                )
+            )
+            for execution in executions:
+                execution.status = AgentStepExecutionStatus.canceled.value
+                execution.finished_at = now
+                execution.fence_token += 1
+                execution.lease_owner = None
+                execution.lease_expires_at = None
+                execution.heartbeat_at = None
+                execution.next_wakeup_at = None
+            decisions = list(
+                await session.scalars(
+                    select(DecisionRequest).where(
+                        DecisionRequest.production_order_id == order.id,
+                        DecisionRequest.status == DecisionStatus.pending,
+                    )
+                )
+            )
+            for decision in decisions:
+                decision.status = DecisionStatus.canceled
+                decision.resolved_at = now
+                decision.resolution_payload = {
+                    "reason": "production_order_canceled"
+                }
             order.status = ProductionOrderStatus.canceled
             run.status = AgentRunStatus.canceled
             run.stop_reason = "user_canceled"

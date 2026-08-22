@@ -270,9 +270,9 @@ async def test_runtime_consumer_deduplicates_successful_event() -> None:
     envelope = {
         "event_id": event_id,
         "schema_version": 1,
-        "topic": "runtime.noop",
+        "topic": "agent.run.requested",
         "aggregate_id": str(uuid.uuid4()),
-        "payload": {},
+        "payload": {"production_order_id": str(uuid.uuid4())},
     }
 
     await dispatch_envelope_once(envelope)
@@ -590,6 +590,7 @@ async def test_async_planning_creates_review_only_after_plan_exists() -> None:
     assert order is not None and order.status == ProductionOrderStatus.awaiting_plan_approval
     assert plan is not None
     assert decision is not None and decision.plan_version_id == plan.id
+    assert decision.scope == "plan"
 
 
 async def test_cancel_before_planning_finishes_cancels_operation_without_plan() -> None:
@@ -933,6 +934,26 @@ async def test_external_executor_capability_executes_through_agent_operation() -
             "planner": {"kind": "integration-test"},
             "revision_context": None,
         }
+        executions = list(
+            await session.scalars(
+                select(AgentStepExecution)
+                .where(AgentStepExecution.plan_version_id == plan.id)
+                .order_by(AgentStepExecution.created_at)
+            )
+        )
+        research_execution = executions[0]
+        await session.execute(
+            delete(AgentStepExecution).where(
+                AgentStepExecution.plan_version_id == plan.id,
+                AgentStepExecution.id != research_execution.id,
+            )
+        )
+        research_execution.plan_step_key = "research.generate"
+        research_execution.capability_key = capability_key
+        research_execution.capability_version = "1.0.0"
+        research_execution.evaluator_key = "script_quality_v1"
+        research_execution.evaluator_version = "1.0.0"
+        research_execution.execution_kind = "external"
         await session.commit()
 
     await run_agent_once(order_id, run_id)

@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-22：Runtime Foundation 封板闭环
+
+- 目标：封闭 Step 决策永久等待、Legacy Plan 静默重跑、取消遗留非终态 Step、Evaluator 无限恢复和 Redis 消费失败丢事件五类最后可靠性缺口。
+- 实际修改：Decision 增加 plan/step/order scope，Step resolution 持久化后用 Outbox 恢复原 attempt；claim 禁止补建旧 Plan；取消覆盖未来兼容的全部非终态 Step、Operation 与 pending Decision 并统一递增 fence；Evaluator 复用已落库 capability outcome 与 artifact 做有界 phase retry；ConsumedEvent 增加退避、processing takeover、恢复扫描和 dead-letter，未知 topic/schema 不再成功确认。新增迁移 `20260822_0011`。
+- 验证结果：常规环境 47 项通过；隔离 PostgreSQL 空库升级到 head 后 69 项通过，新增覆盖 Decision resolve/tenant/idempotency/crash resume、Legacy Guard、全状态取消与 stale write、数据库提交后的外部 interrupt 失败隔离、Evaluator 成功重试/耗尽/lease takeover、Consumer duplicate/retry/dead-letter/expired claim/未知协议；`0011 → 0010 → 0011` 与 `20260821_0003 → head` 均通过。
+- 遗留风险：跨 Redis 与业务副作用仍是至少一次语义，外部 Provider/Executor 必须继续提供幂等键和 fencing；人工介入订单尚未提供自动 Legacy 数据推断工具，因为无法可靠判断旧外部副作用是否已经发生。
+- 可复用经验：恢复入口必须从数据库事实重建，不能依赖队列消息仍然存在；缺少权威运行态时宁可停止，也不能猜测并重放。
+
 ## 2026-08-22：Runtime Foundation 全面加固
 
 - 目标：落实外部审计指出的步骤真相、长事务、迟到写回、版本漂移、伪 DAG、Artifact latest 解析、Outbox、租户约束、状态命名和存储耦合问题。

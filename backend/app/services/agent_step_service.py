@@ -13,6 +13,7 @@ from app.evaluators.registry import get_evaluator_registry
 from app.integrations.managed_brain import resolve_brain_binding_snapshot
 from app.integrations.new_api_brain import BrainConfigurationError
 from app.models.agent import (
+    AgentEvent,
     AgentRun,
     AgentRunStatus,
     AgentStepArtifactInput,
@@ -77,6 +78,7 @@ async def materialize_plan_step_executions(
     plan_spec: AgentPlanSpec,
     state_origin: str = "native",
 ) -> list[AgentStepExecution]:
+    settings = get_settings()
     existing = list(
         (
             await session.scalars(
@@ -146,6 +148,7 @@ async def materialize_plan_step_executions(
             ),
             attempt=1,
             max_attempts=step.max_attempts,
+            evaluation_max_attempts=settings.evaluator_max_attempts,
             status=AgentStepExecutionStatus.pending.value,
             idempotency_key=_execution_identity(plan.id, step.key, 1),
             state_origin=(
@@ -259,14 +262,50 @@ async def claim_ready_agent_steps(
         if plan is None:
             return []
         plan_spec = AgentPlanSpec.model_validate(plan.plan_payload)
-        executions = await materialize_plan_step_executions(
-            session,
-            order=order,
-            run=run,
-            plan=plan,
-            plan_spec=plan_spec,
-            state_origin="legacy_reconciled",
+        executions = list(
+            await session.scalars(
+                select(AgentStepExecution).where(
+                    AgentStepExecution.plan_version_id == plan.id,
+                )
+            )
         )
+        expected_keys = {step.key for step in plan_spec.steps}
+        materialized_keys = {execution.plan_step_key for execution in executions}
+        missing_keys = sorted(expected_keys - materialized_keys)
+        if missing_keys:
+            error_code = "LEGACY_RUNTIME_STATE_UNSAFE_TO_RECONCILE"
+            order.status = ProductionOrderStatus.manual_intervention
+            run.status = AgentRunStatus.failed
+            run.stop_reason = error_code
+            for execution in executions:
+                if execution.status in TERMINAL_STEP_STATUSES:
+                    continue
+                execution.status = AgentStepExecutionStatus.failed_final.value
+                execution.error_code = error_code
+                execution.error_message = (
+                    "Active PlanVersion is missing authoritative step executions"
+                )
+                execution.finished_at = now
+                execution.fence_token += 1
+                execution.lease_owner = None
+                execution.lease_expires_at = None
+                execution.heartbeat_at = None
+                execution.next_wakeup_at = None
+            session.add(
+                AgentEvent(
+                    tenant_id=order.tenant_id,
+                    production_order_id=order.id,
+                    agent_run_id=run.id,
+                    event_type="agent.runtime.manual_intervention",
+                    payload={
+                        "error_code": error_code,
+                        "plan_version_id": plan.id,
+                        "missing_step_keys": missing_keys,
+                    },
+                )
+            )
+            await session.commit()
+            return []
         executions = sorted(executions, key=lambda item: item.attempt)
         latest_by_key: dict[str, AgentStepExecution] = {}
         for execution in executions:
@@ -334,6 +373,7 @@ async def claim_ready_agent_steps(
                     execution_kind=current.execution_kind,
                     attempt=next_attempt,
                     max_attempts=current.max_attempts,
+                    evaluation_max_attempts=current.evaluation_max_attempts,
                     status=AgentStepExecutionStatus.pending.value,
                     idempotency_key=_execution_identity(plan.id, step.key, next_attempt),
                     state_origin=current.state_origin,

@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.agent.contracts import AgentPlanSpec, CapabilityOutcome, OutcomeStatus
 from app.agent.evaluation import EvaluationAction
+from app.agent.operations import AgentOperationStatus
 from app.capabilities.base import CapabilityContext
 from app.capabilities.dispatcher import CapabilityDispatcher, CapabilityUnavailableError
 from app.capabilities.registry import get_capability_registry
@@ -18,6 +19,7 @@ from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.agent import (
     AgentEvent,
+    AgentOperation,
     AgentRun,
     AgentRunStatus,
     AgentStepArtifactInput,
@@ -27,6 +29,7 @@ from app.models.agent import (
     ArtifactVersion,
     ArtifactVersionStatus,
     DecisionRequest,
+    DecisionStatus,
     OutboxEvent,
     PlanVersion,
     PlanVersionStatus,
@@ -36,6 +39,7 @@ from app.models.agent import (
 from app.services.agent_operation_service import stage_planning_operation
 from app.services.agent_step_service import (
     AgentStepClaim,
+    TERMINAL_STEP_STATUSES,
     claim_ready_agent_steps,
     execution_claim_is_current,
     renew_agent_step_lease,
@@ -321,6 +325,7 @@ async def _create_rework_attempt(
         execution_kind=execution.execution_kind,
         attempt=attempt,
         max_attempts=execution.max_attempts,
+        evaluation_max_attempts=execution.evaluation_max_attempts,
         status=AgentStepExecutionStatus.pending.value,
         idempotency_key=(
             f"agent-step:{execution.plan_version_id}:{execution.plan_step_key}:attempt:{attempt}"
@@ -455,6 +460,25 @@ async def _apply_outcome(claim: AgentStepClaim, outcome: CapabilityOutcome) -> N
             # before an evaluator is allowed to perform remote/model work.
             await session.commit()
             evaluator_error: EvaluatorUnavailableError | None = None
+            evaluator_exception: Exception | None = None
+            with session.no_autoflush:
+                current_execution_id = await session.scalar(
+                    select(AgentStepExecution.id)
+                    .where(
+                        AgentStepExecution.id == claim.execution_id,
+                        AgentStepExecution.status
+                        == AgentStepExecutionStatus.evaluating.value,
+                        AgentStepExecution.lease_owner == claim.worker_id,
+                        AgentStepExecution.fence_token == claim.fence_token,
+                    )
+                    .with_for_update()
+                )
+            if current_execution_id is None:
+                await session.rollback()
+                return
+            execution.evaluation_attempt += 1
+            evaluation_attempt = execution.evaluation_attempt
+            await session.commit()
             try:
                 evaluation = await evaluate_step(
                     session,
@@ -467,6 +491,8 @@ async def _apply_outcome(claim: AgentStepClaim, outcome: CapabilityOutcome) -> N
                 )
             except EvaluatorUnavailableError as exc:
                 evaluator_error = exc
+            except Exception as exc:  # noqa: BLE001
+                evaluator_exception = exc
             with session.no_autoflush:
                 current_execution_id = await session.scalar(
                     select(AgentStepExecution.id)
@@ -491,7 +517,81 @@ async def _apply_outcome(claim: AgentStepClaim, outcome: CapabilityOutcome) -> N
                 order.status = ProductionOrderStatus.manual_intervention
                 run.status = AgentRunStatus.failed
                 run.stop_reason = "evaluator_unavailable"
+                await _append_event(
+                    session,
+                    order=order,
+                    run=run,
+                    event_type="agent.step.evaluation_failed_final",
+                    payload={
+                        **_execution_event_payload(execution),
+                        "error_code": execution.error_code,
+                        "attempt": evaluation_attempt,
+                    },
+                )
+            elif evaluator_exception is not None:
+                execution.error_code = type(evaluator_exception).__name__[:128]
+                execution.error_message = (
+                    str(evaluator_exception)[:2000] or "Evaluator execution failed"
+                )
+                if evaluation_attempt < execution.evaluation_max_attempts:
+                    delay = settings.evaluator_retry_base_seconds * (
+                        2 ** max(0, evaluation_attempt - 1)
+                    )
+                    available_at = now + timedelta(seconds=delay)
+                    execution.status = AgentStepExecutionStatus.evaluating.value
+                    execution.next_wakeup_at = available_at
+                    order.status = ProductionOrderStatus.evaluating
+                    run.status = AgentRunStatus.evaluating
+                    session.add(
+                        OutboxEvent(
+                            tenant_id=order.tenant_id,
+                            aggregate_type="production_order",
+                            aggregate_id=order.id,
+                            topic="agent.run.requested",
+                            payload={
+                                "production_order_id": order.id,
+                                "agent_run_id": run.id,
+                            },
+                            dedupe_key=(
+                                f"agent-step-evaluation-retry:{execution.id}:"
+                                f"{evaluation_attempt}"
+                            ),
+                            available_at=available_at,
+                        )
+                    )
+                    await _append_event(
+                        session,
+                        order=order,
+                        run=run,
+                        event_type="agent.step.evaluation_retry_scheduled",
+                        payload={
+                            **_execution_event_payload(execution),
+                            "error_code": execution.error_code,
+                            "attempt": evaluation_attempt,
+                            "next_wakeup_at": available_at.isoformat(),
+                        },
+                    )
+                else:
+                    execution.status = AgentStepExecutionStatus.failed_final.value
+                    execution.finished_at = now
+                    order.status = ProductionOrderStatus.manual_intervention
+                    run.status = AgentRunStatus.failed
+                    run.stop_reason = "evaluator_attempts_exhausted"
+                    await _append_event(
+                        session,
+                        order=order,
+                        run=run,
+                        event_type="agent.step.evaluation_failed_final",
+                        payload={
+                            **_execution_event_payload(execution),
+                            "error_code": execution.error_code,
+                            "attempt": evaluation_attempt,
+                        },
+                    )
             else:
+                execution.error_code = None
+                execution.error_message = None
+                execution.next_wakeup_at = None
                 if evaluation.artifact_version is not None:
                     execution.output_artifact_version_id = evaluation.artifact_version.id
                 if evaluation.record is not None:
@@ -639,11 +739,51 @@ async def _apply_outcome(claim: AgentStepClaim, outcome: CapabilityOutcome) -> N
             decision_spec = outcome.decision
             if decision_spec is None:
                 raise RuntimeError("awaiting_decision outcome is missing DecisionSpec")
+            prior_decision = (
+                await session.get(DecisionRequest, execution.decision_request_id)
+                if execution.decision_request_id
+                else None
+            )
+            if (
+                prior_decision is not None
+                and prior_decision.reason_code == decision_spec.reason_code
+            ):
+                if prior_decision.status == DecisionStatus.pending:
+                    execution.status = AgentStepExecutionStatus.awaiting_decision.value
+                    order.status = ProductionOrderStatus.awaiting_decision
+                    run.status = AgentRunStatus.awaiting_decision
+                else:
+                    execution.status = AgentStepExecutionStatus.failed_final.value
+                    execution.error_code = "DECISION_RESOLUTION_NOT_APPLIED"
+                    execution.error_message = (
+                        "Capability requested the same decision after it was resolved"
+                    )
+                    execution.finished_at = now
+                    order.status = ProductionOrderStatus.manual_intervention
+                    run.status = AgentRunStatus.failed
+                    run.stop_reason = "decision_resolution_not_applied"
+                    await _append_event(
+                        session,
+                        order=order,
+                        run=run,
+                        event_type="agent.step.failed_final",
+                        payload={
+                            **_execution_event_payload(execution),
+                            "error_code": execution.error_code,
+                            "decision_id": prior_decision.id,
+                        },
+                    )
+                execution.lease_owner = None
+                execution.lease_expires_at = None
+                execution.heartbeat_at = None
+                await session.commit()
+                return
             decision = DecisionRequest(
                 tenant_id=order.tenant_id,
                 production_order_id=order.id,
                 agent_run_id=run.id,
                 plan_version_id=plan.id,
+                scope="step",
                 reason_code=decision_spec.reason_code,
                 title=decision_spec.title,
                 summary=decision_spec.summary,
@@ -756,52 +896,86 @@ async def _cancel_order(production_order_id: str, agent_run_id: str | None) -> N
         run = await session.scalar(run_query.order_by(AgentRun.run_number.desc()).limit(1))
         if run is None:
             return
-        plan = await session.scalar(
-            select(PlanVersion)
-            .where(
-                PlanVersion.agent_run_id == run.id,
-                PlanVersion.status == PlanVersionStatus.active,
-            )
-            .order_by(PlanVersion.version.desc())
-            .limit(1)
-        )
-        if plan is not None:
-            spec = AgentPlanSpec.model_validate(plan.plan_payload)
-            by_key = {step.key: step for step in spec.steps}
-            executions = list(
-                await session.scalars(
-                    select(AgentStepExecution).where(
-                        AgentStepExecution.plan_version_id == plan.id,
-                        AgentStepExecution.status.in_(
-                            [
-                                AgentStepExecutionStatus.running.value,
-                                AgentStepExecutionStatus.waiting.value,
-                                AgentStepExecutionStatus.retry_wait.value,
-                                AgentStepExecutionStatus.pending.value,
-                            ]
-                        ),
-                    )
+        now = datetime.now(UTC)
+        executions = list(
+            await session.scalars(
+                select(AgentStepExecution).where(
+                    AgentStepExecution.production_order_id == order.id,
+                    AgentStepExecution.status.not_in(TERMINAL_STEP_STATUSES),
                 )
             )
-            for execution in executions:
+        )
+        plan_cache: dict[str, tuple[PlanVersion, dict[str, Any]]] = {}
+        for execution in executions:
+            if execution.plan_version_id not in plan_cache:
+                plan = await session.get(PlanVersion, execution.plan_version_id)
+                if plan is not None:
+                    spec = AgentPlanSpec.model_validate(plan.plan_payload)
+                    plan_cache[plan.id] = (
+                        plan,
+                        {step.key: step for step in spec.steps},
+                    )
+            plan_context = plan_cache.get(execution.plan_version_id)
+            if plan_context is not None and execution.external_execution_id:
+                plan, by_key = plan_context
                 step = by_key.get(execution.plan_step_key)
-                execution.status = AgentStepExecutionStatus.canceled.value
-                execution.finished_at = datetime.now(UTC)
-                execution.fence_token += 1
-                execution.lease_owner = None
-                execution.lease_expires_at = None
-                if step is not None and execution.external_execution_id:
+                if step is not None:
                     interrupt_targets.append((execution, step, order, run, plan))
+            execution.status = AgentStepExecutionStatus.canceled.value
+            execution.finished_at = now
+            execution.fence_token += 1
+            execution.lease_owner = None
+            execution.lease_expires_at = None
+            execution.heartbeat_at = None
+            execution.next_wakeup_at = None
+        operations = list(
+            await session.scalars(
+                select(AgentOperation).where(
+                    AgentOperation.production_order_id == order.id,
+                    AgentOperation.status.not_in(
+                        [
+                            AgentOperationStatus.succeeded.value,
+                            AgentOperationStatus.failed_final.value,
+                            AgentOperationStatus.canceled.value,
+                        ]
+                    ),
+                )
+            )
+        )
+        for operation in operations:
+            operation.status = AgentOperationStatus.canceled.value
+            operation.finished_at = now
+            operation.fence_token += 1
+            operation.lease_owner = None
+            operation.lease_expires_at = None
+            operation.heartbeat_at = None
+            operation.next_wakeup_at = None
+        decisions = list(
+            await session.scalars(
+                select(DecisionRequest).where(
+                    DecisionRequest.production_order_id == order.id,
+                    DecisionRequest.status == DecisionStatus.pending,
+                )
+            )
+        )
+        for decision in decisions:
+            decision.status = DecisionStatus.canceled
+            decision.resolved_at = now
+            decision.resolution_payload = {"reason": "production_order_canceled"}
         order.status = ProductionOrderStatus.canceled
         run.status = AgentRunStatus.canceled
         run.stop_reason = "user_canceled"
-        run.finished_at = datetime.now(UTC)
+        run.finished_at = now
         await _append_event(
             session,
             order=order,
             run=run,
             event_type="production_order.canceled",
-            payload={},
+            payload={
+                "canceled_step_count": len(executions),
+                "canceled_operation_count": len(operations),
+                "canceled_decision_count": len(decisions),
+            },
         )
         await session.commit()
 

@@ -81,7 +81,7 @@ queued
   → failed_final
 ```
 
-数据库是事实来源。`OutboxEvent` 在业务事务提交后再投递 Redis，事件带 schema version，发布失败采用指数退避并在达到上限后进入死信；消费者用 `ConsumedEvent` 去重，业务执行仍用幂等键和 fencing 抵御“处理成功但确认前崩溃”的重复投递。Redis 不承担唯一任务事实。`StepAttempt` 不可变保存每次 Workflow 执行，`ProviderJob` 保存外部任务。
+数据库是事实来源。`OutboxEvent` 在业务事务提交后再投递 Redis，事件带 schema version，发布失败采用指数退避并在达到上限后进入死信；消费者用 `ConsumedEvent` 保存 processing lease、失败退避、接管次数与 dead-letter。`BLPOP` 后处理失败或进程退出时，恢复扫描从原始 OutboxEvent 重建 envelope；未知 topic/schema 不得记为成功。业务执行仍用幂等键和 fencing 抵御“处理成功但确认前崩溃”的重复投递。Redis 不承担唯一任务事实。`StepAttempt` 不可变保存每次 Workflow 执行，`ProviderJob` 保存外部任务。
 
 `AgentOperation` 与 `WorkflowRun` 的边界不同：前者承载 Agent 的异步规划和可选外部执行器任务；后者承载 Provider 调用或多阶段业务能力的可靠执行。两者都使用数据库租约与 Outbox，但不互相冒充。
 
@@ -97,6 +97,8 @@ Capability succeeded → Evaluate
   └─ manual / 超过 max_auto_rework → manual_intervention
 ```
 
+Evaluator 普通异常保持同一 AgentStepExecution 在 `evaluating` phase，以持久化的 `capability_outcome + output_artifact_version_id` 有界重试，不重新调用 Capability；精确 Evaluator 版本缺失属于永久运行时错误。每次评价领取与写回都验证 owner + fence，租约接管后旧评价结果不会落库。
+
 外部 Executor 结果必须返回终态 `CapabilityOutcome`；Dispatcher 将其转换回同一条评价链。Handler、Provider/Workflow 和可选外部 Executor 都不各自实现质量闭环。内置内容评价器目前只增加了策略字段完整性、标题与正文长度等确定性规则；真正的内容质量仍应后续组合 Brain 与领域规则判断。
 
 ## 6. 编排可靠性规则
@@ -110,6 +112,10 @@ Capability succeeded → Evaluate
 - 素材以 `storage_backend + storage_key` 和稳定 `asset://` locator 保存；业务计划不持久化 Duix 容器路径。Provider staging adapter 在提交边界把 locator 转换为 Duix mount 路径或其他 Provider 所需引用。
 
 PlanStep 是真实 DAG：Worker 每轮领取完整 ready set 并并发执行独立节点；依赖输入通过 `AgentStepArtifactInput` 绑定精确 ArtifactVersion，重试和重规划不会重新解析“同 key 最新产物”。Capability、Evaluator、Workflow、Provider Adapter、External Executor 与 Brain 路由都使用创建时固定的精确版本。
+
+PlanVersion 创建与完整 AgentStepExecution materialization 必须在同一事务完成。claim 阶段只读取权威 Step，不负责补建；发现 active Plan 缺少任一步骤时，订单进入 `manual_intervention` 并记录 `LEGACY_RUNTIME_STATE_UNSAFE_TO_RECONCILE`。部署升级不会自动重放旧 Plan；开发库是否重置由操作者显式决定。
+
+DecisionRequest 以 `scope=plan|step|order` 区分方案审批、步骤内决策和订单控制。Step Decision resolve 后把结构化 resolution 写回原 Step 的 runtime binding，通过 Outbox 唤醒同一 attempt；重复 resolve 被拒绝，订单取消会使所有 pending Decision 失效并 fence 全部非终态 Step。
 
 ## 7. 后续扩展方式
 

@@ -430,6 +430,7 @@ async def _apply_plan_result(
                 production_order_id=order.id,
                 agent_run_id=run.id,
                 plan_version_id=plan.id,
+                scope="plan",
                 reason_code="PLAN_REVIEW",
                 title="确认本次内容生产方案",
                 summary=f"Agent 已形成 {len(generated.plan.steps)} 个步骤的生产计划。",

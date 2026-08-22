@@ -77,6 +77,7 @@ class DecisionRequestRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    scope: Literal["order", "plan", "step"]
     reason_code: str
     title: str
     summary: str

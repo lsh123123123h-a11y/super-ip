@@ -306,6 +306,8 @@ class AgentStepExecution(Base):
     execution_kind: Mapped[str] = mapped_column(String(32), default="inline")
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    evaluation_attempt: Mapped[int] = mapped_column(Integer, default=0)
+    evaluation_max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     status: Mapped[str] = mapped_column(
         String(32), default=AgentStepExecutionStatus.pending.value, index=True
     )
@@ -392,6 +394,7 @@ class DecisionRequest(Base):
     plan_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("plan_versions.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    scope: Mapped[str] = mapped_column(String(16), default="order", index=True)
     reason_code: Mapped[str] = mapped_column(String(64), index=True)
     title: Mapped[str] = mapped_column(String(200))
     summary: Mapped[str] = mapped_column(Text, default="")
@@ -517,6 +520,12 @@ class ConsumedEvent(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=1)
     fence_token: Mapped[int] = mapped_column(Integer, default=1)
     lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    dead_lettered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

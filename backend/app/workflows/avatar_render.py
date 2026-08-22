@@ -29,6 +29,8 @@ from app.workflows.base import (
     step_by_key,
 )
 from app.workflows.registry import WorkflowRegistry
+from app.services.storage_service import ProviderAssetStager
+from app.services.workflow_transitions import transition_workflow
 
 
 logger = logging.getLogger("xingliu.workflow.avatar")
@@ -79,6 +81,9 @@ class AvatarRenderWorkflow:
                 step_attempt_id=attempt.id,
                 capability=workflow.capability,
                 provider=provider_name,
+                provider_adapter_version=str(
+                    payload.get("selected_adapter_version") or ""
+                ) or None,
                 external_job_id=external_job_id,
                 idempotency_key=external_job_id,
                 status="submitting",
@@ -91,16 +96,16 @@ class AvatarRenderWorkflow:
                 },
             )
             context.session.add(job)
-            workflow.status = WorkflowStatus.running
+            transition_workflow(workflow, WorkflowStatus.running)
             workflow.progress = 20
             workflow.next_wakeup_at = now
-            await context.session.commit()
 
         if job is None:
             raise RuntimeError("数字人步骤缺少 ProviderJob")
         provider = context.providers.get_provider(
             job.provider,
             capability=workflow.capability,
+            adapter_version=job.provider_adapter_version,
         )
         descriptor = provider.descriptor()
         if job.created_at:
@@ -114,18 +119,22 @@ class AvatarRenderWorkflow:
                     f"{job.provider} 执行超过 {int(provider.timeout_seconds)} 秒"
                 )
         if job.status == "submitting":
+            staged_inputs = dict(payload)
+            stager = ProviderAssetStager(context.settings)
+            for key in ("audio_path", "avatar_video_path"):
+                staged_inputs[key] = stager.stage(job.provider, str(payload[key]))
             submission = await provider.submit(
                 external_job_id=job.external_job_id,
                 request=ProviderExecutionRequest(
                     capability=workflow.capability,
-                    inputs=payload,
+                    inputs=staged_inputs,
                     provider_options=payload.get("provider_options") or {},
                 ),
             )
             job.external_job_id = submission.external_job_id
             job.status = "submitted"
             job.response_payload = submission.raw
-            workflow.status = WorkflowStatus.waiting_provider
+            transition_workflow(workflow, WorkflowStatus.waiting_provider)
             schedule_wakeup(
                 context,
                 wakeup_key="poll:0",
@@ -133,7 +142,7 @@ class AvatarRenderWorkflow:
             )
             return
 
-        workflow.status = WorkflowStatus.waiting_provider
+        transition_workflow(workflow, WorkflowStatus.waiting_provider)
         provider_status = await provider.query(
             job.external_job_id,
             capability=workflow.capability,
@@ -180,7 +189,7 @@ class AvatarRenderWorkflow:
                 status=StepStatus.succeeded,
                 output_payload={"stored": True},
             )
-            workflow.status = WorkflowStatus.succeeded
+            transition_workflow(workflow, WorkflowStatus.succeeded)
             workflow.progress = 100
             workflow.next_wakeup_at = None
             await self._persist_artifact(context, job)
@@ -202,11 +211,10 @@ class AvatarRenderWorkflow:
         workflow = context.workflow
         logger.error("workflow %s failed: %s", workflow.id, exc, exc_info=True)
         failure_attempt = max((step.attempt for step in workflow.steps), default=0)
-        workflow.status = (
-            WorkflowStatus.failed_final
-            if failure_attempt >= context.settings.max_workflow_attempts
-            else WorkflowStatus.failed_retryable
-        )
+        exhausted = failure_attempt >= context.settings.max_workflow_attempts
+        transition_workflow(workflow, (
+            WorkflowStatus.failed_final if exhausted else WorkflowStatus.retry_wait
+        ))
         workflow.error_code = exc.__class__.__name__
         workflow.error_message = str(exc)
         workflow.next_wakeup_at = None
@@ -218,10 +226,18 @@ class AvatarRenderWorkflow:
                     status=StepStatus.failed,
                     error=exc,
                 )
-        notify_agent(context, suffix=f"failed:{failure_attempt}")
+        if exhausted:
+            notify_agent(context, suffix=f"failed:{failure_attempt}")
+        else:
+            schedule_wakeup(
+                context,
+                wakeup_key=f"retry:{failure_attempt}",
+                delay_seconds=context.settings.runtime_recovery_interval_seconds
+                * (2 ** max(0, failure_attempt - 1)),
+            )
 
     async def cancel(self, context: WorkflowContext) -> None:
-        context.workflow.status = WorkflowStatus.canceled
+        transition_workflow(context.workflow, WorkflowStatus.canceled)
         context.workflow.next_wakeup_at = None
 
     async def _persist_artifact(

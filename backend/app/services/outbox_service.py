@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from redis.asyncio import Redis
 from sqlalchemy import select
@@ -23,6 +23,7 @@ async def publish_outbox_batch(
         select(OutboxEvent)
         .where(
             OutboxEvent.published_at.is_(None),
+            OutboxEvent.dead_lettered_at.is_(None),
             OutboxEvent.available_at <= now,
         )
         .order_by(OutboxEvent.created_at)
@@ -35,6 +36,7 @@ async def publish_outbox_batch(
         envelope = json.dumps(
             {
                 "event_id": event.id,
+                "schema_version": event.schema_version,
                 "topic": event.topic,
                 "tenant_id": event.tenant_id,
                 "aggregate_type": event.aggregate_type,
@@ -48,7 +50,14 @@ async def publish_outbox_batch(
             await redis.rpush(queue_for_topic(settings, event.topic), envelope)
         except Exception as exc:
             event.attempts += 1
-            event.last_error = str(exc)
+            event.last_error = str(exc)[:2000]
+            if event.attempts >= settings.outbox_max_attempts:
+                event.dead_lettered_at = now
+            else:
+                delay = settings.outbox_retry_base_seconds * (
+                    2 ** max(0, event.attempts - 1)
+                )
+                event.available_at = now + timedelta(seconds=delay)
             continue
         event.attempts += 1
         event.last_error = None

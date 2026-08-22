@@ -36,6 +36,7 @@ class ProviderExecutionRequest:
 @dataclass(slots=True)
 class ProviderDescriptor:
     provider_id: str
+    adapter_version: str
     label: str
     category: str
     capabilities: list[str]

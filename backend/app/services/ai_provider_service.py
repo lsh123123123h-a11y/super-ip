@@ -424,6 +424,12 @@ async def list_ai_invocations(
             AIInvocationRead(
                 id=invocation.id,
                 provider_config_id=invocation.provider_config_id,
+                model_binding_id=invocation.model_binding_id,
+                provider_config_version=invocation.provider_config_version,
+                adapter_type=invocation.adapter_type,
+                adapter_version=invocation.adapter_version,
+                routing_policy=invocation.routing_policy,
+                routing_policy_version=invocation.routing_policy_version,
                 provider_name=provider_name or "Bootstrap / 已移除 Provider",
                 provider_source=invocation.provider_source,
                 invocation_kind=invocation.invocation_kind,

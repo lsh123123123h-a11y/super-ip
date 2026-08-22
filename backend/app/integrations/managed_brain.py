@@ -24,6 +24,7 @@ SAFE_METADATA_KEYS = {
     "plan_version_id",
     "production_order_id",
     "step_key",
+    "agent_step_execution_id",
     "trace_id",
 }
 
@@ -34,12 +35,121 @@ class ResolvedBrain:
     provider_config_id: str | None
     provider_source: str
     requested_model: str
+    model_binding_id: str | None
+    provider_config_version: int | None
+    adapter_type: str
+    adapter_version: str
+    routing_policy: str = "model_alias"
+    routing_policy_version: str = "1.0.0"
+
+
+async def resolve_brain_binding_snapshot(
+    tenant_id: str,
+    model_alias: str,
+) -> dict[str, Any]:
+    """Resolve mutable alias routing once without persisting any credential."""
+
+    async with SessionLocal() as session:
+        row = (
+            await session.execute(
+                select(AIModelBinding, AIProviderConfig)
+                .join(
+                    AIProviderConfig,
+                    AIProviderConfig.id == AIModelBinding.provider_config_id,
+                )
+                .where(
+                    AIModelBinding.tenant_id == tenant_id,
+                    AIModelBinding.model_alias == model_alias,
+                    AIModelBinding.enabled.is_(True),
+                    AIProviderConfig.enabled.is_(True),
+                )
+            )
+        ).one_or_none()
+        if row is not None:
+            binding, provider = row
+            return {
+                "model_alias": model_alias,
+                "model_binding_id": binding.id,
+                "provider_config_id": provider.id,
+                "provider_config_version": provider.config_version,
+                "provider_source": "database",
+                "adapter_type": provider.adapter_type,
+                "adapter_version": "1.0.0",
+                "base_url": provider.base_url,
+                "requested_model": binding.upstream_model,
+                "timeout_seconds": provider.timeout_seconds,
+                "routing_policy": "model_alias",
+                "routing_policy_version": "1.0.0",
+            }
+
+    settings = get_settings()
+    if create_configured_brain() is not None:
+        return {
+            "model_alias": model_alias,
+            "model_binding_id": None,
+            "provider_config_id": None,
+            "provider_config_version": None,
+            "provider_source": "bootstrap_env",
+            "adapter_type": "new_api",
+            "adapter_version": "1.0.0",
+            "base_url": settings.model_gateway_base_url,
+            "requested_model": settings.model_gateway_default_model,
+            "timeout_seconds": settings.model_gateway_timeout_seconds,
+            "routing_policy": "bootstrap_env",
+            "routing_policy_version": "1.0.0",
+        }
+    raise BrainConfigurationError(
+        f"model alias {model_alias} 尚未绑定可用的 AI Provider"
+    )
 
 
 async def _resolve_brain(
     tenant_id: str,
     model_alias: str,
+    pinned_binding: dict[str, Any] | None = None,
 ) -> ResolvedBrain:
+    if pinned_binding is not None:
+        if pinned_binding.get("resolution_error"):
+            raise BrainConfigurationError(str(pinned_binding["resolution_error"]))
+        if pinned_binding.get("model_alias") != model_alias:
+            raise BrainConfigurationError("持久化模型绑定与请求的 model alias 不一致")
+        provider_source = str(pinned_binding.get("provider_source") or "")
+        if provider_source == "database":
+            provider_config_id = str(pinned_binding.get("provider_config_id") or "")
+            async with SessionLocal() as session:
+                provider = await session.get(AIProviderConfig, provider_config_id)
+                if provider is None or provider.tenant_id != tenant_id:
+                    raise BrainConfigurationError("持久化模型绑定对应的 Provider 已不存在")
+                if not provider.enabled:
+                    raise BrainConfigurationError("持久化模型绑定对应的 Provider 已停用")
+                try:
+                    api_key = ProviderSecretCipher().decrypt(provider.secret_ciphertext)
+                except SecretEncryptionError as exc:
+                    raise BrainConfigurationError(str(exc)) from exc
+        elif provider_source == "bootstrap_env":
+            provider_config_id = ""
+            api_key = get_settings().model_gateway_api_key
+        else:
+            raise BrainConfigurationError("持久化模型绑定来源无效")
+        return ResolvedBrain(
+            adapter=NewApiBrainAdapter(
+                base_url=str(pinned_binding.get("base_url") or ""),
+                api_key=api_key,
+                default_model=str(pinned_binding.get("requested_model") or ""),
+                timeout_seconds=float(pinned_binding.get("timeout_seconds") or 120),
+            ),
+            provider_config_id=provider_config_id or None,
+            provider_source=provider_source,
+            requested_model=str(pinned_binding.get("requested_model") or ""),
+            model_binding_id=pinned_binding.get("model_binding_id"),
+            provider_config_version=pinned_binding.get("provider_config_version"),
+            adapter_type=str(pinned_binding.get("adapter_type") or "new_api"),
+            adapter_version=str(pinned_binding.get("adapter_version") or "1.0.0"),
+            routing_policy=str(pinned_binding.get("routing_policy") or "model_alias"),
+            routing_policy_version=str(
+                pinned_binding.get("routing_policy_version") or "1.0.0"
+            ),
+        )
     async with SessionLocal() as session:
         row = (
             await session.execute(
@@ -76,6 +186,10 @@ async def _resolve_brain(
                 provider_config_id=provider.id,
                 provider_source="database",
                 requested_model=binding.upstream_model,
+                model_binding_id=binding.id,
+                provider_config_version=provider.config_version,
+                adapter_type=provider.adapter_type,
+                adapter_version="1.0.0",
             )
 
     bootstrap = create_configured_brain()
@@ -86,6 +200,11 @@ async def _resolve_brain(
             provider_config_id=None,
             provider_source="bootstrap_env",
             requested_model=settings.model_gateway_default_model,
+            model_binding_id=None,
+            provider_config_version=None,
+            adapter_type="new_api",
+            adapter_version="1.0.0",
+            routing_policy="bootstrap_env",
         )
     raise BrainConfigurationError(
         f"model alias {model_alias} 尚未绑定可用的 AI Provider"
@@ -103,14 +222,23 @@ async def brain_alias_available(tenant_id: str, model_alias: str) -> bool:
 class ManagedBrainPort(BrainPort):
     """Resolve tenant model aliases per call and persist product-level facts."""
 
-    def __init__(self, tenant_id: str) -> None:
+    def __init__(
+        self,
+        tenant_id: str,
+        binding_snapshots: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
         self.tenant_id = tenant_id
+        self.binding_snapshots = binding_snapshots or {}
 
     async def complete_structured(
         self,
         request: StructuredBrainRequest,
     ) -> StructuredBrainResponse:
-        resolved = await _resolve_brain(self.tenant_id, request.model_alias)
+        resolved = await _resolve_brain(
+            self.tenant_id,
+            request.model_alias,
+            self.binding_snapshots.get(request.model_alias),
+        )
         started_at = datetime.now(UTC)
         started = perf_counter()
         metadata = {
@@ -130,6 +258,12 @@ class ManagedBrainPort(BrainPort):
             await self._finish_failure(
                 invocation_id=invocation_id,
                 provider_config_id=resolved.provider_config_id,
+                model_binding_id=resolved.model_binding_id,
+                provider_config_version=resolved.provider_config_version,
+                adapter_type=resolved.adapter_type,
+                adapter_version=resolved.adapter_version,
+                routing_policy=resolved.routing_policy,
+                routing_policy_version=resolved.routing_policy_version,
                 started=started,
                 error_code="BRAIN_CALL_CANCELLED",
                 error_message="模型调用被运行时超时或取消",
@@ -254,5 +388,8 @@ class ManagedBrainPort(BrainPort):
             await session.commit()
 
 
-def create_managed_brain(tenant_id: str) -> BrainPort:
-    return ManagedBrainPort(tenant_id)
+def create_managed_brain(
+    tenant_id: str,
+    binding_snapshots: dict[str, dict[str, Any]] | None = None,
+) -> BrainPort:
+    return ManagedBrainPort(tenant_id, binding_snapshots)

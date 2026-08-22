@@ -98,6 +98,14 @@ class AIInvocation(Base):
     provider_config_id: Mapped[str | None] = mapped_column(
         ForeignKey("ai_provider_configs.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    model_binding_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_model_bindings.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    provider_config_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    adapter_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    adapter_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    routing_policy: Mapped[str] = mapped_column(String(64), default="model_alias")
+    routing_policy_version: Mapped[str] = mapped_column(String(64), default="1.0.0")
     provider_source: Mapped[str] = mapped_column(String(32), index=True)
     invocation_kind: Mapped[str] = mapped_column(String(64), default="brain.structured")
     purpose: Mapped[str] = mapped_column(String(100), index=True)

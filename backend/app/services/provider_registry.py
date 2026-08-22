@@ -4,6 +4,7 @@ from typing import Any
 
 from app.core.config import Settings, get_settings
 from app.core.extensions import load_registrar_modules
+from app.core.versioning import version_sort_key
 from app.providers.base import CapabilityProvider, ProviderDescriptor
 
 
@@ -17,6 +18,7 @@ class ProviderRouteDecision:
     requested_provider: str
     requested_execution: str
     selected_provider: str
+    selected_adapter_version: str
     selected_execution: str
     policy_version: str
     reason: str
@@ -33,7 +35,7 @@ class ProviderRoutingPolicy:
 class ProviderRegistry:
     def __init__(self, settings: Settings, *, install_builtins: bool = True) -> None:
         self.settings = settings
-        self._providers: dict[str, CapabilityProvider] = {}
+        self._providers: dict[tuple[str, str], CapabilityProvider] = {}
         self._policies: dict[str, ProviderRoutingPolicy] = {}
         if install_builtins:
             from app.providers.builtin import register_builtin_providers
@@ -41,9 +43,13 @@ class ProviderRegistry:
             register_builtin_providers(self, settings)
 
     def register(self, provider: CapabilityProvider) -> None:
-        if provider.provider_id in self._providers:
-            raise ValueError(f"Provider 重复注册：{provider.provider_id}")
-        self._providers[provider.provider_id] = provider
+        descriptor = provider.descriptor()
+        registration = (provider.provider_id, descriptor.adapter_version)
+        if registration in self._providers:
+            raise ValueError(
+                f"Provider 重复注册：{provider.provider_id}@{descriptor.adapter_version}"
+            )
+        self._providers[registration] = provider
 
     def register_policy(
         self,
@@ -60,8 +66,20 @@ class ProviderRegistry:
             version=version,
         )
 
+    def _latest_providers(self) -> dict[str, CapabilityProvider]:
+        latest: dict[str, CapabilityProvider] = {}
+        for provider in self._providers.values():
+            current = latest.get(provider.provider_id)
+            if current is None or version_sort_key(
+                provider.descriptor().adapter_version
+            ) > version_sort_key(current.descriptor().adapter_version):
+                latest[provider.provider_id] = provider
+        return latest
+
     def descriptors(self, capability: str | None = None) -> list[ProviderDescriptor]:
-        descriptors = [provider.descriptor() for provider in self._providers.values()]
+        descriptors = [
+            provider.descriptor() for provider in self._latest_providers().values()
+        ]
         if capability is None:
             return descriptors
         return [item for item in descriptors if capability in item.capabilities]
@@ -71,10 +89,24 @@ class ProviderRegistry:
         provider_id: str,
         *,
         capability: str | None = None,
+        adapter_version: str | None = None,
     ) -> CapabilityProvider:
-        provider = self._providers.get(provider_id)
+        if adapter_version is not None:
+            provider = self._providers.get((provider_id, adapter_version))
+        else:
+            candidates = [
+                candidate
+                for (registered_id, _), candidate in self._providers.items()
+                if registered_id == provider_id
+            ]
+            provider = max(
+                candidates,
+                key=lambda item: version_sort_key(item.descriptor().adapter_version),
+                default=None,
+            )
         if provider is None:
-            raise ProviderRoutingError(f"未知 Provider：{provider_id}")
+            suffix = f"@{adapter_version}" if adapter_version else ""
+            raise ProviderRoutingError(f"未知 Provider：{provider_id}{suffix}")
         descriptor = provider.descriptor()
         if capability is not None and capability not in descriptor.capabilities:
             raise ProviderRoutingError(f"{provider_id} 不支持能力 {capability}")
@@ -164,6 +196,7 @@ class ProviderRegistry:
             requested_provider=requested_provider,
             requested_execution=requested_execution,
             selected_provider=selected.provider_id,
+            selected_adapter_version=selected.adapter_version,
             selected_execution=selected_execution,
             policy_version=policy_version,
             reason=reason,
@@ -193,7 +226,9 @@ class ProviderRegistry:
         capability: str | None = None,
     ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        for provider in self._providers.values():
+        latest = self._latest_providers()
+        for provider_id in sorted(latest):
+            provider = latest[provider_id]
             descriptor = provider.descriptor()
             if capability is not None and capability not in descriptor.capabilities:
                 continue

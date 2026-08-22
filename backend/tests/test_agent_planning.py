@@ -33,6 +33,13 @@ def test_agent_plan_uses_supplied_script_audio_and_avatar() -> None:
         "delivery.package",
     ]
     assert plan.steps[3].blocked_by_missing_input is False
+    assert next(step for step in plan.steps if step.key == "audio.evaluate").depends_on == [
+        "intent.normalize"
+    ]
+    assert next(step for step in plan.steps if step.key == "avatar.render").depends_on == [
+        "script.accept_input",
+        "audio.evaluate",
+    ]
     assert plan.contract == "agent.plan.v1"
     assert plan.planner == {"kind": "template", "version": "digital-human-v1"}
 

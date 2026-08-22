@@ -6,6 +6,7 @@ from app.agent.contracts import CapabilityDefinition, ExecutionKind
 from app.capabilities.base import CapabilityHandler
 from app.core.config import get_settings
 from app.core.extensions import load_registrar_modules
+from app.core.versioning import version_sort_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +30,7 @@ class CapabilityRegistration:
 
 class CapabilityRegistry:
     def __init__(self) -> None:
-        self._registrations: dict[str, CapabilityRegistration] = {}
+        self._registrations: dict[tuple[str, str], CapabilityRegistration] = {}
 
     def register(
         self,
@@ -41,8 +42,9 @@ class CapabilityRegistry:
         source: str = "application",
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        if definition.key in self._registrations:
-            raise ValueError(f"能力重复注册：{definition.key}")
+        identity = (definition.key, definition.version)
+        if identity in self._registrations:
+            raise ValueError(f"能力重复注册：{definition.key}@{definition.version}")
         if external_executor_key and executor_key and external_executor_key != executor_key:
             raise ValueError(f"能力 {definition.key} 收到了冲突的外部 Executor 绑定")
         selected_executor = external_executor_key or executor_key
@@ -50,10 +52,9 @@ class CapabilityRegistry:
             raise ValueError(f"能力 {definition.key} 不能同时绑定 Handler 和外部 Executor")
         if selected_executor is not None and definition.execution_kind not in {
             ExecutionKind.external,
-            ExecutionKind.harness,
         }:
             raise ValueError(f"只有 external 能力可以绑定外部 Executor：{definition.key}")
-        self._registrations[definition.key] = CapabilityRegistration(
+        self._registrations[identity] = CapabilityRegistration(
             definition=definition,
             handler=handler,
             external_executor_key=selected_executor,
@@ -66,12 +67,14 @@ class CapabilityRegistry:
         key: str,
         handler: CapabilityHandler,
         *,
+        version: str | None = None,
         source: str | None = None,
     ) -> None:
-        registration = self._require(key)
+        registration = self._require(key, version)
         if registration.installed:
             raise ValueError(f"能力已绑定执行入口：{key}")
-        self._registrations[key] = CapabilityRegistration(
+        identity = (registration.definition.key, registration.definition.version)
+        self._registrations[identity] = CapabilityRegistration(
             definition=registration.definition,
             handler=handler,
             source=source or registration.source,
@@ -83,52 +86,55 @@ class CapabilityRegistry:
         key: str,
         executor_key: str,
         *,
+        version: str | None = None,
         source: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        registration = self._require(key)
+        registration = self._require(key, version)
         if registration.installed:
             raise ValueError(f"能力已绑定执行入口：{key}")
         if registration.definition.execution_kind not in {
             ExecutionKind.external,
-            ExecutionKind.harness,
         }:
             raise ValueError(f"只有 external 能力可以绑定外部 Executor：{key}")
-        self._registrations[key] = CapabilityRegistration(
+        identity = (registration.definition.key, registration.definition.version)
+        self._registrations[identity] = CapabilityRegistration(
             definition=registration.definition,
             external_executor_key=executor_key,
             source=source or registration.source,
             metadata={**registration.metadata, **(metadata or {})},
         )
 
-    def bind_executor(
+    def _require(
         self,
         key: str,
-        executor_key: str,
-        *,
-        source: str | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> None:
-        """Compatibility alias; new code should name the optional mechanism explicitly."""
-
-        self.bind_external_executor(
-            key,
-            executor_key,
-            source=source,
-            metadata=metadata,
-        )
-
-    def _require(self, key: str) -> CapabilityRegistration:
-        registration = self._registrations.get(key)
+        version: str | None = None,
+    ) -> CapabilityRegistration:
+        registration = self.resolve(key, version)
         if registration is None:
-            raise KeyError(key)
+            raise KeyError(f"{key}@{version}" if version else key)
         return registration
 
-    def resolve(self, key: str) -> CapabilityRegistration | None:
-        return self._registrations.get(key)
+    def resolve(
+        self,
+        key: str,
+        version: str | None = None,
+    ) -> CapabilityRegistration | None:
+        if version is not None:
+            return self._registrations.get((key, version))
+        candidates = [
+            registration
+            for (registered_key, _), registration in self._registrations.items()
+            if registered_key == key
+        ]
+        return max(
+            candidates,
+            key=lambda item: version_sort_key(item.definition.version),
+            default=None,
+        )
 
-    def is_executable(self, key: str) -> bool:
-        registration = self.resolve(key)
+    def is_executable(self, key: str, version: str | None = None) -> bool:
+        registration = self.resolve(key, version)
         if registration is None:
             return False
         if registration.handler is not None:
@@ -142,26 +148,40 @@ class CapabilityRegistry:
             is not None
         )
 
-    def definition(self, key: str) -> CapabilityDefinition | None:
-        registration = self.resolve(key)
+    def definition(
+        self,
+        key: str,
+        version: str | None = None,
+    ) -> CapabilityDefinition | None:
+        registration = self.resolve(key, version)
         return registration.definition if registration else None
 
-    def handler(self, key: str) -> CapabilityHandler | None:
-        registration = self.resolve(key)
+    def handler(
+        self,
+        key: str,
+        version: str | None = None,
+    ) -> CapabilityHandler | None:
+        registration = self.resolve(key, version)
         return registration.handler if registration else None
 
     def catalog(self) -> list[CapabilityDefinition]:
-        return [
-            self._registrations[key].definition
-            for key in sorted(self._registrations)
-        ]
+        return [self.resolve(key).definition for key in self.keys()]
 
     def installed_catalog(self) -> list[CapabilityDefinition]:
         return [
-            self._registrations[key].definition
-            for key in sorted(self._registrations)
+            self.resolve(key).definition
+            for key in self.keys()
             if self.is_executable(key)
         ]
+
+    def keys(self) -> list[str]:
+        return sorted({key for key, _ in self._registrations})
+
+    def versions(self, key: str) -> list[str]:
+        return sorted(
+            [version for registered_key, version in self._registrations if registered_key == key],
+            key=version_sort_key,
+        )
 
 
 def _definition(
@@ -170,14 +190,16 @@ def _definition(
     execution_kind: ExecutionKind,
     *,
     timeout_seconds: int = 300,
+    input_schema: dict[str, Any] | None = None,
+    output_schema: dict[str, Any] | None = None,
 ) -> CapabilityDefinition:
     return CapabilityDefinition(
         key=key,
         version="1.0.0",
         label=label,
         execution_kind=execution_kind,
-        input_schema={"type": "object"},
-        output_schema={"type": "object"},
+        input_schema=input_schema or {"type": "object", "additionalProperties": False},
+        output_schema=output_schema or {"type": "object", "additionalProperties": False},
         timeout_seconds=timeout_seconds,
     )
 

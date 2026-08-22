@@ -66,7 +66,11 @@ class _BrainContentCapability:
 
     async def execute(self, context: CapabilityContext) -> CapabilityOutcome:
         output_model = self.output_model_for(context)
-        brain = self.brain or create_managed_brain(context.order.tenant_id)
+        binding = dict(context.runtime_binding_payload.get("brain_binding") or {})
+        brain = self.brain or create_managed_brain(
+            context.order.tenant_id,
+            {self.model_alias: binding} if binding else None,
+        )
         try:
             response = await brain.complete_structured(
                 StructuredBrainRequest(
@@ -85,6 +89,7 @@ class _BrainContentCapability:
                         "production_order_id": context.order.id,
                         "plan_version_id": context.plan.id,
                         "step_key": context.step.key,
+                        "agent_step_execution_id": context.step_execution_id,
                     },
                 )
             )

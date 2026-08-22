@@ -18,7 +18,7 @@ Agent Kernel（Intent、Plan、Policy、Evaluation、Replan）
                     Product / Capability / Workflow / Provider / Evaluator Registries
 ```
 
-当前主链已落库为 `Project → ProductionOrder → AgentRun → PlanVersion → WorkflowRun → ArtifactVersion`。旧 `IPProfile / Campaign / ContentProject` 作为兼容业务对象保留，新 Agent 链路通过 Snapshot 和 ContentItem 逐步承接。
+当前主链已落库为 `Project → ProductionOrder → AgentRun → PlanVersion → AgentStepExecution → ArtifactVersion`；需要 Provider 轮询的步骤再关联 `WorkflowRun`。`AgentEvent` 只保存审计时间线，不参与步骤完成度、重试或恢复判断。旧 `IPProfile / Campaign / ContentProject` 作为兼容业务对象保留，新 Agent 链路通过 Snapshot 和 ContentItem 逐步承接。
 
 依赖方向固定为“适配器依赖合同”。`backend/app/agent/` 不导入能力插件、工作流 Schema 或 Provider；`agent_runtime.py` 只处理通用 `CapabilityOutcome` 和 `EvaluationResult`。数字人口播的工作流查询、提交、失败归一化与取消位于 `capabilities/avatar_render.py`，其具体状态机位于 `workflows/avatar_render.py`。
 
@@ -43,7 +43,7 @@ PlanVersion / 外部执行句柄 / Usage / Trace / 有界重试
 
 Provider 负责同类服务的可替换适配与路由；Workflow 负责需要等待、轮询、恢复或多阶段推进的可靠执行；Tool/MCP 应作为 Capability 内部调用的原子动作与资源访问入口，在出现真实内容研究/检索需求时按权限、审计和结果合同接入。`AgentExecutorPort` 仅保留给 Codex、Hermes、CLI 等拥有独立生命周期的自主外部执行器，不是核心内容能力的默认路径。
 
-New API 作为独立的 OpenAI-compatible 内部模型网关，继续拥有上游渠道、负载均衡、Token、倍率与网关日志等管理能力；星流不复制它的管理后台。星流只保存自己到网关的加密连接、Brain model alias 绑定，以及和 ProductionOrder / Capability 关联的调用事实。每次调用动态解析数据库配置，`.env` 仅作系统 bootstrap/fallback。星流向网关发送带 JSON Schema 的结构化请求，返回内容仍必须通过内核合同验证。CCSwitch 只可辅助运维配置，不作为业务运行时依赖。
+New API 作为独立的 OpenAI-compatible 内部模型网关，继续拥有上游渠道、负载均衡、Token、倍率与网关日志等管理能力；星流不复制它的管理后台。model alias 只在创建 AgentOperation / AgentStepExecution 时解析一次，并把 binding、Provider 配置版本、Adapter 版本、上游模型和路由策略快照持久化；执行时仅允许读取同一 Provider 的当前密钥，以支持凭据轮换而不改变任务语义。`.env` 仅作系统 bootstrap/fallback。星流向网关发送带 JSON Schema 的结构化请求，返回内容仍必须通过内核合同验证。
 
 ## 3. Provider / Capability / Workflow 边界
 
@@ -77,11 +77,11 @@ queued
   → succeeded
 
 任一步失败
-  → failed_retryable（最多 3 次）
+  → retry_wait（指数退避，最多 3 次）
   → failed_final
 ```
 
-数据库是事实来源。`OutboxEvent` 在业务事务提交后再投递 Redis，Worker 通过 DB 租约和恢复扫描重新发现任务；Redis 不再承担唯一任务事实。`StepAttempt` 不可变保存每次执行，`ProviderJob` 保存外部任务。
+数据库是事实来源。`OutboxEvent` 在业务事务提交后再投递 Redis，事件带 schema version，发布失败采用指数退避并在达到上限后进入死信；消费者用 `ConsumedEvent` 保存 processing lease、失败退避、接管次数与 dead-letter。`BLPOP` 后处理失败或进程退出时，恢复扫描从原始 OutboxEvent 重建 envelope；未知 topic/schema 不得记为成功。业务执行仍用幂等键和 fencing 抵御“处理成功但确认前崩溃”的重复投递。Redis 不承担唯一任务事实。`StepAttempt` 不可变保存每次 Workflow 执行，`ProviderJob` 保存外部任务。
 
 `AgentOperation` 与 `WorkflowRun` 的边界不同：前者承载 Agent 的异步规划和可选外部执行器任务；后者承载 Provider 调用或多阶段业务能力的可靠执行。两者都使用数据库租约与 Outbox，但不互相冒充。
 
@@ -97,17 +97,25 @@ Capability succeeded → Evaluate
   └─ manual / 超过 max_auto_rework → manual_intervention
 ```
 
+Evaluator 普通异常保持同一 AgentStepExecution 在 `evaluating` phase，以持久化的 `capability_outcome + output_artifact_version_id` 有界重试，不重新调用 Capability；精确 Evaluator 版本缺失属于永久运行时错误。每次评价领取与写回都验证 owner + fence，租约接管后旧评价结果不会落库。
+
 外部 Executor 结果必须返回终态 `CapabilityOutcome`；Dispatcher 将其转换回同一条评价链。Handler、Provider/Workflow 和可选外部 Executor 都不各自实现质量闭环。内置内容评价器目前只增加了策略字段完整性、标题与正文长度等确定性规则；真正的内容质量仍应后续组合 Brain 与领域规则判断。
 
 ## 6. 编排可靠性规则
 
 - 创建任务使用 `(owner_id, idempotency_key)` 唯一约束。
-- Worker 用数据库行锁领取任务，避免多个 Worker 同时执行同一条工作流。
+- Worker 只在短事务中领取执行权；AgentStepExecution、AgentOperation 与 WorkflowRun 均保存 lease、heartbeat 和单调 fence token。能力、模型和 Provider 调用在锁外执行，迟到结果必须用 owner + fence 条件写回。
 - 每次重试生成新的 Provider 外部任务号：`{workflow_id}-{attempt}`，原任务记录不覆盖。
 - 创建任务前执行 Provider 健康检查；显式指定不可用引擎时直接返回可行动错误，自动路由可选择下一就绪引擎。
 - Duix 的 `10004 任务不存在` 在刚提交后可能是短暂可见性延迟；允许有限次数轮询，超过阈值才失败。
 - 失败保留错误码、错误消息、步骤状态和 Provider 原始响应。
-- Duix 与 API 通过同一宿主机共享目录交换素材；业务 API 只下发 Duix 容器内路径。
+- 素材以 `storage_backend + storage_key` 和稳定 `asset://` locator 保存；业务计划不持久化 Duix 容器路径。Provider staging adapter 在提交边界把 locator 转换为 Duix mount 路径或其他 Provider 所需引用。
+
+PlanStep 是真实 DAG：Worker 每轮领取完整 ready set 并并发执行独立节点；依赖输入通过 `AgentStepArtifactInput` 绑定精确 ArtifactVersion，重试和重规划不会重新解析“同 key 最新产物”。Capability、Evaluator、Workflow、Provider Adapter、External Executor 与 Brain 路由都使用创建时固定的精确版本。
+
+PlanVersion 创建与完整 AgentStepExecution materialization 必须在同一事务完成。claim 阶段只读取权威 Step，不负责补建；发现 active Plan 缺少任一步骤时，订单进入 `manual_intervention` 并记录 `LEGACY_RUNTIME_STATE_UNSAFE_TO_RECONCILE`。部署升级不会自动重放旧 Plan；开发库是否重置由操作者显式决定。
+
+DecisionRequest 以 `scope=plan|step|order` 区分方案审批、步骤内决策和订单控制。Step Decision resolve 后把结构化 resolution 写回原 Step 的 runtime binding，通过 Outbox 唤醒同一 attempt；重复 resolve 被拒绝，订单取消会使所有 pending Decision 失效并 fence 全部非终态 Step。
 
 ## 7. 后续扩展方式
 

@@ -18,10 +18,8 @@ class WorkflowStatus(str, enum.Enum):
     canceling = "canceling"
     canceled = "canceled"
     succeeded = "succeeded"
-    failed_retryable = "failed_retryable"
     failed_final = "failed_final"
     manual_intervention = "manual_intervention"
-    cancelled = "cancelled"
 
 
 class StepStatus(str, enum.Enum):
@@ -52,6 +50,7 @@ class WorkflowRun(Base):
         ForeignKey("plan_versions.id", ondelete="SET NULL"), nullable=True, index=True
     )
     task_type: Mapped[str] = mapped_column(String(64), default="digital_human.render")
+    workflow_definition_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     capability: Mapped[str] = mapped_column(String(100), default="avatar.render", index=True)
     status: Mapped[WorkflowStatus] = mapped_column(Enum(WorkflowStatus), default=WorkflowStatus.queued, index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
@@ -62,6 +61,8 @@ class WorkflowRun(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fence_token: Mapped[int] = mapped_column(Integer, default=0)
     next_wakeup_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -145,6 +146,7 @@ class ProviderJob(Base):
     )
     capability: Mapped[str] = mapped_column(String(100), default="avatar.render", index=True)
     provider: Mapped[str] = mapped_column(String(64), default="duix")
+    provider_adapter_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     connection_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
     external_job_id: Mapped[str] = mapped_column(String(128), index=True)
@@ -169,6 +171,7 @@ class WorkflowRouteDecision(Base):
     requested_provider: Mapped[str] = mapped_column(String(64), default="auto")
     requested_execution: Mapped[str] = mapped_column(String(64), default="auto")
     selected_provider: Mapped[str] = mapped_column(String(64))
+    selected_adapter_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     selected_execution: Mapped[str] = mapped_column(String(64))
     policy_version: Mapped[str] = mapped_column(String(64))
     reason: Mapped[str] = mapped_column(Text)

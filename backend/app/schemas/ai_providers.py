@@ -97,6 +97,12 @@ class AIProviderEnabledUpdate(BaseModel):
 class AIInvocationRead(BaseModel):
     id: str
     provider_config_id: str | None
+    model_binding_id: str | None
+    provider_config_version: int | None
+    adapter_type: str | None
+    adapter_version: str | None
+    routing_policy: str
+    routing_policy_version: str
     provider_name: str
     provider_source: str
     invocation_kind: str

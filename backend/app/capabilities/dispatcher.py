@@ -25,16 +25,21 @@ class CapabilityDispatcher:
     def __init__(self, registry: CapabilityRegistry) -> None:
         self.registry = registry
 
-    def can_execute(self, key: str) -> bool:
-        return self.registry.is_executable(key)
+    def can_execute(self, key: str, version: str | None = None) -> bool:
+        return self.registry.is_executable(key, version)
 
     async def execute(self, context: CapabilityContext) -> CapabilityOutcome:
-        registration = self.registry.resolve(context.step.capability)
+        registration = self.registry.resolve(
+            context.step.capability,
+            context.step.capability_version,
+        )
         if registration is None or not self.registry.is_executable(
-            context.step.capability
+            context.step.capability,
+            context.step.capability_version,
         ):
             raise CapabilityUnavailableError(
-                f"能力尚未安装执行入口：{context.step.capability}"
+                "能力实现版本尚未安装："
+                f"{context.step.capability}@{context.step.capability_version or 'legacy-unpinned'}"
             )
         if registration.handler is not None:
             return await registration.handler.execute(context)
@@ -45,7 +50,10 @@ class CapabilityDispatcher:
         context: CapabilityContext,
         external_execution_id: str | None,
     ) -> None:
-        registration = self.registry.resolve(context.step.capability)
+        registration = self.registry.resolve(
+            context.step.capability,
+            context.step.capability_version,
+        )
         if registration is None:
             return
         if registration.handler is not None:
@@ -59,21 +67,25 @@ class CapabilityDispatcher:
         if operation.status in {
             AgentOperationStatus.succeeded.value,
             AgentOperationStatus.failed_final.value,
-            AgentOperationStatus.canceled.value,
         }:
             return
+        already_canceled = operation.status == AgentOperationStatus.canceled.value
         if operation.external_execution_id:
             from app.executors.registry import get_executor_registry
 
             executor = get_executor_registry().executor(
-                registration.external_executor_key
+                operation.executor_key or registration.external_executor_key,
+                operation.executor_version,
             )
             if executor is not None:
                 await executor.interrupt(operation.external_execution_id)
-        operation.status = AgentOperationStatus.canceled.value
-        operation.finished_at = datetime.now(UTC)
-        operation.lease_owner = None
-        operation.lease_expires_at = None
+        if not already_canceled:
+            operation.status = AgentOperationStatus.canceled.value
+            operation.finished_at = datetime.now(UTC)
+            operation.fence_token += 1
+            operation.lease_owner = None
+            operation.lease_expires_at = None
+            operation.heartbeat_at = None
 
     async def _execute_with_external_executor(
         self,
@@ -90,6 +102,14 @@ class CapabilityDispatcher:
             raise CapabilityUnavailableError(
                 f"能力缺少 Executor 绑定：{context.step.capability}"
             )
+        executor_binding = dict(
+            context.runtime_binding_payload.get("external_executor") or {}
+        )
+        executor_version = (
+            str(executor_binding.get("version"))
+            if executor_binding.get("key") == executor_key
+            else None
+        )
         idempotency_key = (
             f"capability:{context.run.id}:{context.plan.id}:{context.step.key}:"
             f"attempt:{context.execution_attempt}"
@@ -124,6 +144,7 @@ class CapabilityDispatcher:
                 order=context.order,
                 run=context.run,
                 executor_key=executor_key,
+                executor_version=executor_version,
                 request=request,
                 idempotency_key=idempotency_key,
                 policy=ExecutionPolicy(

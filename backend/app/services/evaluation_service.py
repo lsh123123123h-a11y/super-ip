@@ -58,9 +58,15 @@ async def evaluate_step(
     outcome: CapabilityOutcome,
     artifact_version: ArtifactVersion | None = None,
 ) -> EvaluationExecution:
-    registration = get_evaluator_registry().resolve(step.evaluator)
+    registration = get_evaluator_registry().resolve(
+        step.evaluator,
+        step.evaluator_version,
+    )
     if registration is None:
-        raise EvaluatorUnavailableError(f"评价器尚未安装：{step.evaluator}")
+        raise EvaluatorUnavailableError(
+            "评价器实现版本尚未安装："
+            f"{step.evaluator}@{step.evaluator_version or 'legacy-unpinned'}"
+        )
     artifact_version = artifact_version or await _latest_artifact_version(
         session,
         order=order,

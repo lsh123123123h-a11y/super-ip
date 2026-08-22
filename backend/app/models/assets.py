@@ -25,6 +25,10 @@ class Asset(Base):
     media_type: Mapped[str] = mapped_column(String(100))
     size_bytes: Mapped[int] = mapped_column(Integer)
     storage_key: Mapped[str] = mapped_column(String(500), unique=True)
+    storage_backend: Mapped[str] = mapped_column(String(64), default="local")
+    locator_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Deprecated compatibility field. Runtime code must use the storage locator
+    # and a provider staging adapter instead of persisting provider-owned paths.
     provider_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
     metadata_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

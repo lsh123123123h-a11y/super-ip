@@ -22,9 +22,19 @@ class Settings(BaseSettings):
     workflow_queue: str = "xingliu:workflow:queue"
     agent_queue: str = "xingliu:agent:queue"
     outbox_batch_size: int = 50
+    outbox_max_attempts: int = 8
+    outbox_retry_base_seconds: int = 5
+    runtime_consumer_max_attempts: int = 8
+    runtime_consumer_retry_base_seconds: int = 5
+    runtime_consumer_lease_seconds: int = 180
     runtime_recovery_interval_seconds: float = 10.0
     agent_operation_lease_seconds: int = 180
     agent_operation_retry_base_seconds: int = 10
+    agent_step_lease_seconds: int = 180
+    agent_step_retry_base_seconds: int = 10
+    agent_step_max_concurrency: int = 8
+    evaluator_max_attempts: int = 3
+    evaluator_retry_base_seconds: int = 10
     planning_timeout_seconds: int = 180
     planning_max_attempts: int = 3
     workflow_lease_seconds: int = 120
@@ -60,6 +70,7 @@ class Settings(BaseSettings):
     opentalking_timeout_seconds: float = 3600.0
 
     max_upload_bytes: int = 500 * 1024 * 1024
+    asset_storage_root: Path | None = None
 
     @property
     def allowed_origins(self) -> list[str]:

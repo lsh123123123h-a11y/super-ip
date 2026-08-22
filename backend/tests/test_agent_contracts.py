@@ -56,6 +56,14 @@ def test_plan_contract_rejects_forward_or_unknown_dependencies() -> None:
         AgentPlanSpec.model_validate(payload)
 
 
+def test_plan_contract_rejects_ambiguous_artifact_producers() -> None:
+    payload = _plan_payload()
+    payload["steps"][1]["expected_artifact"] = "intent_spec"
+
+    with pytest.raises(ValidationError):
+        AgentPlanSpec.model_validate(payload)
+
+
 def test_capability_registry_separates_catalog_from_installed_handlers() -> None:
     registry = get_capability_registry()
 
@@ -66,7 +74,10 @@ def test_capability_registry_separates_catalog_from_installed_handlers() -> None
     assert "content.strategy" in {
         item.key for item in registry.installed_catalog()
     }
-    assert registry.resolve("content.strategy").metadata == {"requires": ["brain"]}
+    assert registry.resolve("content.strategy").metadata == {
+        "requires": ["brain"],
+        "model_alias": "reasoning.default",
+    }
     assert "avatar.render" in {item.key for item in registry.installed_catalog()}
 
 
@@ -82,6 +93,23 @@ def test_capability_registry_rejects_duplicate_contracts() -> None:
 
     with pytest.raises(ValueError, match="重复注册"):
         registry.register(definition)
+
+
+def test_capability_registry_keeps_old_versions_exactly_addressable() -> None:
+    registry = CapabilityRegistry()
+    for version in ("1.0.0", "2.0.0"):
+        registry.register(
+            CapabilityDefinition(
+                key="example.versioned",
+                version=version,
+                label=f"示例能力 {version}",
+                execution_kind=ExecutionKind.inline,
+            )
+        )
+
+    assert registry.resolve("example.versioned").definition.version == "2.0.0"
+    assert registry.resolve("example.versioned", "1.0.0").definition.version == "1.0.0"
+    assert registry.resolve("example.versioned", "3.0.0") is None
 
 
 def test_external_binding_is_not_installed_until_executor_adapter_exists() -> None:

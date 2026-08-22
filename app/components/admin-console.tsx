@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ProviderControlCenter from "./provider-control-center";
 import TaskCenter from "./task-center";
+import PlatformFoundationCenter from "./platform-foundation-center";
 import { AvatarProvider, listAvatarProviders, listWorkflows, previewAvatarRoute, ProviderCatalog, ProviderRouteDecision, Workflow } from "../lib/api";
 
 type AdminView = "overview" | "tenants" | "ledger" | "providers" | "routing" | "workers" | "operations" | "consent" | "governance" | "configuration" | "audit";
@@ -54,7 +55,7 @@ export default function AdminConsole() {
     <section className="admin-main">
       <header className="admin-topbar"><div><p>{adminTitles[view][0]}</p><h1>{adminTitles[view][1]}</h1></div><div><span className={`admin-api-state ${error ? "error" : ""}`}><i />{error ? "部分服务异常" : loading ? "读取系统状态" : "控制面已连接"}</span><button onClick={() => void refresh()}>↻ 刷新数据</button></div></header>
       {error && <div className="admin-warning">{error}</div>}
-      {view === "overview" && <AdminOverview loading={loading} workflows={workflows} catalog={catalog} onNavigate={setView} />}
+      {view === "overview" && <><PlatformFoundationCenter view="platform" /><AdminOverview loading={loading} workflows={workflows} catalog={catalog} onNavigate={setView} /></>}
       {view === "tenants" && <TenantCenter />}
       {view === "ledger" && <LedgerCenter />}
       {view === "providers" && <ProviderControlCenter />}
@@ -86,18 +87,18 @@ function AdminOverview({ loading, workflows, catalog, onNavigate }: { loading: b
     </section>
     <section className="admin-overview-grid">
       <article className="admin-system-panel"><header><div><span>PRODUCTION PIPELINE</span><h3>任务与能力状态</h3></div><button onClick={() => onNavigate("operations")}>进入任务运维 →</button></header><div className="admin-pipeline-bars"><div><span>成功</span><i><em style={{ width: `${metrics.total ? metrics.succeeded / metrics.total * 100 : 0}%` }} /></i><b>{metrics.succeeded}</b></div><div><span>执行中</span><i><em className="blue" style={{ width: `${metrics.total ? metrics.active / metrics.total * 100 : 0}%` }} /></i><b>{metrics.active}</b></div><div><span>失败</span><i><em className="red" style={{ width: `${metrics.total ? metrics.failed / metrics.total * 100 : 0}%` }} /></i><b>{metrics.failed}</b></div></div><footer>这里只汇总真实 Workflow，不生成虚构收入或 GMV。</footer></article>
-      <article className="admin-readiness"><header><div><span>SAAS READINESS</span><h3>上线准备度</h3></div></header>{[["数字人编排与任务",true],["独立用户端 / 管理端",true],["租户、登录与 RBAC",false],["额度账本与退款",false],["授权证据与内容治理",false]].map(([label, ready]) => <div key={String(label)}><span className={ready ? "done" : "pending"}>{ready ? "✓" : "!"}</span><b>{label}</b><small>{ready ? "已形成第一阶段能力" : "后端事实对象待建设"}</small></div>)}</article>
+      <article className="admin-readiness"><header><div><span>SAAS READINESS</span><h3>上线准备度</h3></div></header>{[["数字人编排与任务",true],["独立用户端 / 管理端",true],["OIDC / RBAC / RLS 基础",true],["计量、配额与账本基础",true],["授权证据与内容治理",false]].map(([label, ready]) => <div key={String(label)}><span className={ready ? "done" : "pending"}>{ready ? "✓" : "!"}</span><b>{label}</b><small>{ready ? "已形成可验证基础" : "后端事实对象待建设"}</small></div>)}</article>
     </section>
     <section className="admin-provider-strip"><div><span>能力网关</span><b>{catalog?.policy_version ?? "读取中"}</b></div>{catalog?.providers.map((provider) => <article key={provider.provider_id}><span className={provider.status} /><div><b>{provider.label}</b><small>{provider.status === "ready" ? "可进入生产路由" : provider.reason || "等待配置"}</small></div></article>)}<button onClick={() => onNavigate("providers")}>管理能力通道 →</button></section>
   </div>;
 }
 
 function TenantCenter() {
-  return <div className="admin-page"><section className="admin-page-lead"><div><span>TENANT BOUNDARY</span><h2>租户、成员与权限必须成为独立事实。</h2><p>当前 API 仍使用 <code>local-user</code>，所以这里明确展示开发态边界，不伪造多租户能力。</p></div><button disabled>＋ 新建租户</button></section><section className="admin-table"><header><span>租户 / 工作空间</span><span>成员</span><span>计划</span><span>状态</span><span>操作</span></header><article><div><b>本地开发工作空间</b><small>owner_id: local-user</small></div><span>1</span><span>未绑定套餐</span><b className="warning">开发模式</b><button>查看边界</button></article></section><aside className="admin-next-block"><b>后端建设顺序</b><div><span>01</span>Tenant / Workspace</div><div><span>02</span>User / Membership / Role</div><div><span>03</span>RBAC 与高风险操作审计</div><div><span>04</span>数据导出、删除与冻结</div></aside></div>;
+  return <PlatformFoundationCenter view="identity" />;
 }
 
 function LedgerCenter() {
-  return <div className="admin-page"><section className="admin-page-lead"><div><span>IMMUTABLE LEDGER</span><h2>额度、成本和退款不能只存在 Provider 日志里。</h2><p>账本尚未启用，因此管理端不显示虚构余额、收入和毛利。</p></div><button disabled>创建套餐</button></section><section className="admin-zero-metrics"><article><span>预占额度</span><b>未启用</b></article><article><span>实际扣减</span><b>未启用</b></article><article><span>失败释放</span><b>未启用</b></article><article><span>退款流水</span><b>未启用</b></article></section><section className="admin-ledger-model"><h3>生产账本事件</h3>{["reserve · 任务受理时预占","capture · 成功后按真实用量扣减","release · 失败或取消时释放","refund · 售后补偿与退款","adjustment · 管理员调整并强制审计"].map((item, index) => <div key={item}><span>{String(index + 1).padStart(2,"0")}</span><b>{item}</b></div>)}</section></div>;
+  return <PlatformFoundationCenter view="billing" />;
 }
 
 function RoutingCenter({ catalog }: { catalog: ProviderCatalog | null }) {

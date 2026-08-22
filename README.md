@@ -29,6 +29,18 @@
 - `docs/architecture.md`：编排层边界、状态机与扩展规则。
 - `docker-compose.yml`：PostgreSQL、Redis、API、Worker、Web 与可选 Duix 服务。
 
+## Production Platform Foundation
+
+Phase 2 在既有 Runtime、Capability、Workflow 与 Provider 合同外新增平台控制面，不改变这些核心边界：
+
+- Identity：开发模式显式使用受信头；生产模式使用 OIDC/JWT（JWKS、issuer、audience、时间声明、算法白名单）或独立 Service Principal。角色与权限由统一关系模型和授权服务解析。
+- Tenant isolation：API/Worker 使用非 owner、`NOSUPERUSER NOBYPASSRLS` 的数据库运行角色；37 张 tenant-owned 表启用 FORCE RLS。Migration 单独使用 owner 凭据。
+- Storage：业务只保存 `asset://backend/key`；local 与 S3-compatible 共用同一合同，Provider 路径只在 staging/promotion adapter 内出现。
+- Metering：不可变 UsageFact、版本化 PriceBook/PricingRule、Quota reservation 和 append-only Ledger 分层保存；未配置价格时只记录用量，不伪造金额。
+- Operations：`/health/live` 只检查进程，`/health/ready` 实查 PostgreSQL revision、Redis、Storage 和生产配置；`/metrics` 导出 HTTP、Outbox、dead letter 与 quota 指标。
+
+生产环境必须设置 `AUTH_MODE=oidc` 及 OIDC 参数、稳定的 `SERVICE_PRINCIPAL_PEPPER`、对象存储凭据，并分别提供 `DATABASE_URL`（非特权 runtime role）和 `MIGRATION_DATABASE_URL`（migration owner）。
+
 ## 本地启动
 
 ### 前端
@@ -43,9 +55,17 @@ npm run dev
 先复制 `.env.example` 为 `.env`、`backend/.env.example` 为 `backend/.env`，然后启动 PostgreSQL 与 Redis。
 
 ```bash
-docker compose up -d postgres redis
+docker compose up -d postgres postgres-runtime-role redis
 cd backend
 .venv/Scripts/alembic upgrade head
+```
+
+Compose 全栈会先幂等创建 `xingliu_runtime` 运行角色，再由独立 `migrate` service 使用 owner 连接升级 schema；API/Worker 不使用 owner 连接。只运行本地 Alembic 时，`backend/.env` 的 `MIGRATION_DATABASE_URL` 应指向 owner，`DATABASE_URL` 应指向 runtime role。
+
+需要验证 S3-compatible adapter 时显式启动 MinIO profile：
+
+```bash
+docker compose --profile object-storage up -d minio minio-init
 ```
 
 ### API 与 Worker
@@ -121,7 +141,12 @@ OpenTalking 先以第二引擎接入。配置 `OPENTALKING_BASE_URL` 后，管�
 
 ## 执行网关与兼容接口
 
-- `GET /health`：业务 API 存活检查。
+- `GET /health` / `GET /health/live`：进程存活检查。
+- `GET /health/ready`：PostgreSQL、migration revision、Redis、Storage 与生产配置 readiness。
+- `GET /metrics`：Prometheus 文本指标。
+- `GET /v1/admin/operations/platform`：平台依赖、Runtime、Outbox 与 dead-letter 控制面。
+- `GET /v1/admin/identity/{members|roles|service-principals}`：身份与权限控制面。
+- `GET /v1/admin/{usage|pricing|quotas|ledger}`：计量、价格、配额与账本控制面。
 - `GET/POST/PUT /v1/admin/ai-providers`：AI Provider 与模型 alias 控制面（租户 owner/admin）。
 - `POST /v1/admin/ai-providers/test-connection`：保存前测试连接并读取真实模型目录。
 - `POST /v1/admin/ai-providers/{id}/test`：使用已加密保存的 Token 复检连接。

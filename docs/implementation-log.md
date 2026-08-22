@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-22：Production Platform Foundation 封板
+
+- 目标：在不重写 Runtime Foundation 与 Capability/Workflow/Provider 核心边界的前提下，建立可上线的身份授权、数据库租户隔离、对象存储、计量计价、可观测性、管理端与自动质量门禁。
+- 实际修改：新增 OIDC/JWT 与 Service Principal adapter、关系化 RBAC 和统一 permission gate；37 张 tenant-owned 表启用 FORCE RLS，并分离 migration owner 与非特权 runtime role；StorageBackend 支持 local/S3、presigned download、checksum、Provider staging/promotion 与 ArtifactVersion locator；新增不可变 UsageFact、版本化 PriceBook/PricingRule、Quota reservation、append-only Ledger 和统一 UsageReporter；增加真实 readiness、结构化脱敏日志、Prometheus 指标、平台运维 API 与 `/admin` 身份/资源计费分区；新增迁移 `20260822_0012`、ADR-005 至 ADR-008 和 GitHub Actions merge gates。
+- 验证结果：隔离 PostgreSQL 17 空库升级后，以 `NOSUPERUSER NOBYPASSRLS` 非 owner 运行角色执行全部 88 项测试，`88 passed`、无 skip；相对封板前同条件 69 项增加 19 项，既有 Runtime Foundation 测试未删除。真实 MinIO 覆盖 S3 put/get/stat/presign，OIDC 覆盖签名/issuer/audience/exp/nbf/算法/请求头冒充；`0012 → 0011 → 0012` 通过，`20260821_0003 → head` 使用真实 legacy rows 验证 tenant/role 回填无丢失，前端 lint/build 与 Compose profile 均通过。
+- 遗留风险：CI 与本地验证使用自签 JWT 和 MinIO，不代替目标部署环境的真实 IdP/S3 smoke；PostgreSQL system context 是受控应用 GUC，仍要求禁止 SQL 注入并严格保护 runtime 数据库凭据；本账本是内部计量账本，不包含支付、税务或发票语义。
+- 可复用经验：RLS 必须用非 owner、非超级用户验证；Migration 和 Runtime 凭据必须分离；Provider 临时路径只能在 adapter 边界解释；Usage、Pricing、Quota 与 Ledger 必须分层，所有纠错通过追加事实完成；平台封板条件应由仓库 CI 自动证明，而不是依赖开发机口头结果。
+
 ## 2026-08-22：Runtime Foundation 封板闭环
 
 - 目标：封闭 Step 决策永久等待、Legacy Plan 静默重跑、取消遗留非终态 Step、Evaluator 无限恢复和 Redis 消费失败丢事件五类最后可靠性缺口。

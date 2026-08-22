@@ -1,11 +1,13 @@
 from dataclasses import asdict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.schemas.providers import (
     ProviderRoutePreviewRequest,
     ProviderRoutePreviewResponse,
 )
+from app.core.principal import Principal
+from app.services.authorization_service import require_permission
 from app.services.provider_registry import ProviderRoutingError, get_provider_registry
 
 router = APIRouter(prefix="/providers", tags=["providers"])
@@ -16,6 +18,7 @@ registry = get_provider_registry()
 async def list_providers(
     probe: bool = True,
     capability: str = "avatar.render",
+    principal: Principal = Depends(require_permission("provider.read")),
 ) -> dict[str, object]:
     providers = await registry.catalog(probe=probe, capability=capability)
     priority, policy_version = registry.routing_policy(capability)
@@ -42,6 +45,7 @@ async def list_providers(
 @router.post("/route-preview", response_model=ProviderRoutePreviewResponse)
 async def preview_provider_route(
     payload: ProviderRoutePreviewRequest,
+    principal: Principal = Depends(require_permission("provider.read")),
 ) -> ProviderRoutePreviewResponse:
     try:
         decision = await registry.decide_live(

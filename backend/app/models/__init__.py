@@ -19,7 +19,25 @@ from app.models.agent import (
 from app.models.assets import Asset, AssetRef, ConsentSnapshot
 from app.models.ai_provider import AIInvocation, AIModelBinding, AIProviderConfig
 from app.models.business import Campaign, ContentProject, IPProfile
-from app.models.identity import Membership, Tenant, User
+from app.models.identity import (
+    AuthenticationAuditEvent,
+    ExternalIdentity,
+    Membership,
+    Permission,
+    Role,
+    RolePermission,
+    ServicePrincipal,
+    Tenant,
+    User,
+)
+from app.models.metering import (
+    LedgerEntry,
+    PriceBook,
+    PricingRule,
+    TenantQuota,
+    UsageFact,
+    UsageReservation,
+)
 from app.models.orchestration import ProviderJob, StepAttempt, WorkflowRouteDecision, WorkflowRun, WorkflowStep
 
 __all__ = [
@@ -33,6 +51,7 @@ __all__ = [
     "AIProviderConfig",
     "Artifact",
     "ArtifactVersion",
+    "AuthenticationAuditEvent",
     "ConsumedEvent",
     "Asset",
     "AssetRef",
@@ -41,18 +60,29 @@ __all__ = [
     "ContentItem",
     "ContentProject",
     "DecisionRequest",
+    "ExternalIdentity",
     "IPProfile",
     "IPProfileSnapshot",
+    "LedgerEntry",
     "Membership",
     "OutboxEvent",
     "PlanVersion",
+    "Permission",
+    "PriceBook",
+    "PricingRule",
     "ProductionOrder",
     "ProviderJob",
     "Project",
     "QualityEvaluation",
+    "Role",
+    "RolePermission",
+    "ServicePrincipal",
     "StepAttempt",
     "Tenant",
+    "TenantQuota",
     "User",
+    "UsageFact",
+    "UsageReservation",
     "WorkflowRouteDecision",
     "WorkflowRun",
     "WorkflowStep",

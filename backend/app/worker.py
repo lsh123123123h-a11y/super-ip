@@ -10,6 +10,8 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
+from app.core.observability import configure_structured_logging
+from app.core.redaction import safe_error_summary
 from app.models.agent import (
     ConsumedEvent,
     OutboxEvent,
@@ -26,9 +28,9 @@ from app.services.outbox_service import publish_outbox_batch
 from app.services.workflow_runtime import run_workflow_once, worker_id
 
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-logger = logging.getLogger("xingliu.worker")
 settings = get_settings()
+configure_structured_logging(settings.log_level)
+logger = logging.getLogger("xingliu.worker")
 CONSUMER_NAME = "runtime-worker-v1"
 SUPPORTED_SCHEMA_VERSION = 1
 SUPPORTED_RUNTIME_TOPICS = {
@@ -226,7 +228,7 @@ async def _finish_envelope(
             row.dead_lettered_at = None
             row.last_error = None
         else:
-            row.last_error = str(error)[:2000]
+            row.last_error = safe_error_summary(error)[:2000]
             if row.attempts >= settings.runtime_consumer_max_attempts:
                 row.status = "dead_lettered"
                 row.dead_lettered_at = now

@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from time import perf_counter
 from typing import Any
 
@@ -17,6 +18,7 @@ from app.integrations.new_api_brain import (
     NewApiBrainAdapter,
 )
 from app.models.ai_provider import AIInvocation, AIModelBinding, AIProviderConfig
+from app.services.metering_service import MeteringService, UsageReport
 
 
 SAFE_METADATA_KEYS = {
@@ -349,6 +351,31 @@ class ManagedBrainPort(BrainPort):
             invocation.cost_currency = response.cost_currency
             invocation.latency_ms = max(0, round((perf_counter() - started) * 1000))
             invocation.finished_at = datetime.now(UTC)
+            metering = MeteringService()
+            for metric, quantity in (
+                ("llm.input_tokens", invocation.input_tokens),
+                ("llm.output_tokens", invocation.output_tokens),
+            ):
+                if quantity and quantity > 0:
+                    await metering.record_and_price(
+                        session,
+                        UsageReport(
+                            tenant_id=invocation.tenant_id,
+                            source_type="ai_invocation",
+                            source_id=invocation.id,
+                            metric=metric,
+                            quantity=Decimal(quantity),
+                            unit="token",
+                            dedupe_key=f"ai_invocation:{invocation.id}:{metric}",
+                            occurred_at=invocation.finished_at,
+                            operation_id=(invocation.metadata_payload or {}).get(
+                                "agent_operation_id"
+                            ),
+                            provider_id=invocation.provider_config_id,
+                            model=invocation.requested_model,
+                            metadata={"provider_source": invocation.provider_source},
+                        ),
+                    )
             if provider_config_id:
                 provider = await session.get(AIProviderConfig, provider_config_id)
                 if provider is not None and provider.enabled:

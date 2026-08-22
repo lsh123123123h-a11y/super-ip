@@ -16,6 +16,9 @@ class IPProfile(Base):
     __tablename__ = "ip_profiles"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_text)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
     owner_id: Mapped[str] = mapped_column(String(128), default="local-user", index=True)
     name: Mapped[str] = mapped_column(String(200))
     promise: Mapped[str] = mapped_column(Text, default="")
@@ -34,6 +37,9 @@ class Campaign(Base):
     __tablename__ = "campaigns"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_text)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
     owner_id: Mapped[str] = mapped_column(String(128), default="local-user", index=True)
     name: Mapped[str] = mapped_column(String(200))
     goal: Mapped[str] = mapped_column(Text, default="")
@@ -49,6 +55,9 @@ class ContentProject(Base):
     __tablename__ = "content_projects"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_text)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
     owner_id: Mapped[str] = mapped_column(String(128), default="local-user", index=True)
     campaign_id: Mapped[str | None] = mapped_column(ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True, index=True)
     ip_profile_id: Mapped[str | None] = mapped_column(ForeignKey("ip_profiles.id", ondelete="SET NULL"), nullable=True)

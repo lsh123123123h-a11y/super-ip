@@ -58,6 +58,13 @@ class DuixProvider:
             "pn": 1,
         }
         if self.settings.duix_mock:
+            result = (
+                self.settings.duix_shared_data_root
+                / "results"
+                / f"{external_job_id}.mp4"
+            )
+            result.parent.mkdir(parents=True, exist_ok=True)
+            result.write_bytes(f"duix-mock-artifact:{external_job_id}".encode())
             return ProviderSubmission(external_job_id=external_job_id, raw={"code": 10000, "mock": True})
 
         response = await self._request("POST", "/submit", json=payload)

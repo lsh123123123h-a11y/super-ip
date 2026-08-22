@@ -125,4 +125,28 @@ DecisionRequest 以 `scope=plan|step|order` 区分方案审批、步骤内决策
 - OpenTalking：第二引擎，覆盖视频创建、视频克隆与后续实时会话；通过星流视频桥归一化为异步 Provider Job；
 - 云 Provider：突发扩容与高规格成片。
 
-当前第二个非数字人 Product 为 `content.article`，通过 Brain-backed `content.strategy → content.generate` 验证 Artifact 在能力间传递以及统一 Evaluate 闭环。下一阶段优先加入真实 `content.research` / 爆款研究：先接搜索或平台数据 Tool/MCP，再由 Capability 形成有来源的研究 Artifact，并加入 Brain + 领域规则评价。External Executor Adapter 按真实自主执行场景再接，不作为这条业务链的前置条件。随后再按上线需求推进版本化价格、对象存储、OIDC/RBAC/RLS、配额与 Knowledge/Retrieval。
+当前第二个非数字人 Product 为 `content.article`，通过 Brain-backed `content.strategy → content.generate` 验证 Artifact 在能力间传递以及统一 Evaluate 闭环。下一阶段优先加入真实 `content.research` / 爆款研究：先接搜索或平台数据 Tool/MCP，再由 Capability 形成有来源的研究 Artifact，并加入 Brain + 领域规则评价。External Executor Adapter 按真实自主执行场景再接，不作为这条业务链的前置条件。Identity/RBAC/RLS、对象存储合同、版本化价格/配额/账本已由 Production Platform Foundation 在 Runtime 外层封板；后续可在这些边界上推进 Knowledge/Retrieval。
+
+## 8. Production Platform Foundation
+
+平台边界位于 API/Worker 入口和业务 Runtime 外侧：
+
+```text
+OIDC / Service Principal
+        ↓ Principal
+AuthorizationService → Permission / Role / Membership
+        ↓ tenant-scoped Session
+PostgreSQL application filter + FORCE RLS
+        ↓
+既有 ProductionOrder / Agent Runtime / Capability / Workflow / Provider
+        ├─ StorageService → local | S3 → Provider staging/promotion
+        └─ UsageReporter → UsageFact → PriceBook/Quota → LedgerEntry
+```
+
+API Session 从已认证 Principal 写入事务级 `app.tenant_id`，禁止 system context；Worker、migration 与系统恢复使用显式 system Session。生产运行连接必须是非 owner、非超级用户且 `NOBYPASSRLS`，migration owner 连接只用于 Alembic。RLS 不是替代应用过滤，而是防止漏写 tenant predicate 的第二道边界。跨租户引用继续使用复合约束/trigger，不能因为加入 policy 退化。
+
+Storage 只向领域对象暴露 backend-neutral locator。Provider adapter 可在提交边界把 locator 转换为 mount path，并在结果边界把 Provider 临时产物提升为稳定对象；Workflow 不持久化这些路径。UsageFact 是外部调用和平台活动的不可变标准事实，Pricing 与 Ledger 是后续派生层，Provider 原始 usage 不直接成为账单。
+
+管理端从真实 operations、identity 和 metering API 读取状态；`setup_required`、`unavailable` 和 dead-letter 必须原样呈现。Readiness 检查 PostgreSQL revision、Redis、Storage 与生产配置，liveness 不依赖外部系统。结构化日志和 Prometheus 指标使用 request/trace/tenant/principal 关联，任何凭据、Authorization 和嵌套 secret 在输出前统一脱敏。
+
+详细决策见 ADR-005 至 ADR-008。

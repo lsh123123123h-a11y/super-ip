@@ -73,6 +73,7 @@ def test_provider_staging_owns_duix_path_translation(tmp_path: Path) -> None:
     stager = ProviderAssetStager(
         Settings(
             asset_storage_root=tmp_path,
+            duix_shared_data_root=tmp_path / "duix",
             duix_container_data_root="/provider/data",
         )
     )

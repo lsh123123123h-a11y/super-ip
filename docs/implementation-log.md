@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-21：AI Provider 控制面与动态 New API Brain
+
+- 目标：把 New API / Brain 从日常 `.env` 配置升级为管理员可操作、动态生效并保存真实用量的 AI Provider 控制面。
+- 实际修改：新增按租户隔离的 `AIProviderConfig`、`AIModelBinding`、`AIInvocation`；Provider Token 使用 Fernet 加密，API 只返回脱敏提示；新增 New API 连接测试、模型目录、启停、alias 绑定和调用事实 API；Brain 每次调用按 alias 动态解析数据库配置，`.env` 保留 bootstrap/fallback；规划、内容策略和内容生成分别使用 `reasoning.default` / `writing.default`；管理端「能力与通道」改为可编辑控制面，并保留媒体 Provider 折叠视图。
+- 验证结果：隔离 PostgreSQL 全量迁移后 47 项后端测试通过，覆盖密钥非明文、alias 修改后同一 Brain 实例下一次调用生效、Token/延迟/成本事实记录和网关超时错误码；前端 ESLint 与生产构建通过；Compose 已迁移到 `20260821_0003`，API、Worker、Web 健康；未持久化配置的失败连接返回安全 502，日志不包含提交的 Token；隔离测试数据库已删除。
+- 遗留风险：当前本地没有真实 New API 地址与 Token，因此没有冒充完成外部模型调用；正式 OIDC/RBAC/RLS 尚未完成，现阶段管理 API 在既有受信身份头之上校验租户 owner/admin；标准 Chat Completions 响应通常只提供 Token，不提供货币成本，成本字段保持空值直到网关明确返回或后续接入其授权日志 API。
+- 可复用经验：New API 管上游渠道与网关计费，Super-IP 管业务语义 alias、生产上下文和本系统事实；Secret 加密主密钥属于部署 bootstrap，Provider Token 属于可动态更新的业务配置，两者不能混为同一层。
+
 ## 2026-08-21：纠正 Harness 默认假设并加入内容文章链路
 
 - 目标：明确产品自己的 Agent Runtime 才是运行主体，普通内容能力通过 Brain/Handler 执行，Codex/Harness 等外部执行器只作为可选机制。

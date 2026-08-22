@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
@@ -15,7 +16,16 @@ class BrainConfigurationError(RuntimeError):
 
 
 class BrainGatewayError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        error_code: str = "BRAIN_GATEWAY_ERROR",
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
 
 
 def _json_object(content: Any) -> dict[str, Any]:
@@ -58,9 +68,11 @@ class NewApiBrainAdapter(BrainPort):
         self.timeout_seconds = timeout_seconds
         self.transport = transport
 
-    def _validate_configuration(self) -> None:
-        if not self.base_url or not self.api_key or not self.default_model:
-            raise BrainConfigurationError("模型网关地址、密钥和默认模型必须完整配置")
+    def _validate_configuration(self, *, require_model: bool = True) -> None:
+        if not self.base_url or not self.api_key:
+            raise BrainConfigurationError("模型网关地址和密钥必须完整配置")
+        if require_model and not self.default_model:
+            raise BrainConfigurationError("模型网关默认模型尚未配置")
 
     def _endpoint(self, resource: str) -> str:
         root = self.base_url
@@ -80,8 +92,9 @@ class NewApiBrainAdapter(BrainPort):
         resource: str,
         *,
         json_payload: dict[str, Any] | None = None,
+        require_model: bool = True,
     ) -> dict[str, Any]:
-        self._validate_configuration()
+        self._validate_configuration(require_model=require_model)
         try:
             async with httpx.AsyncClient(
                 timeout=self.timeout_seconds,
@@ -97,7 +110,14 @@ class NewApiBrainAdapter(BrainPort):
                 payload = response.json()
         except httpx.HTTPStatusError as exc:
             raise BrainGatewayError(
-                f"模型网关请求失败（HTTP {exc.response.status_code}）"
+                f"模型网关请求失败（HTTP {exc.response.status_code}）",
+                status_code=exc.response.status_code,
+                error_code="BRAIN_GATEWAY_HTTP_ERROR",
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise BrainGatewayError(
+                "模型网关请求超时",
+                error_code="BRAIN_GATEWAY_TIMEOUT",
             ) from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise BrainGatewayError("模型网关请求或响应解析失败") from exc
@@ -145,19 +165,52 @@ class NewApiBrainAdapter(BrainPort):
             "output_tokens": int(usage_payload.get("completion_tokens") or 0),
             "total_tokens": int(usage_payload.get("total_tokens") or 0),
         }
+        reported_cost = _reported_cost(payload, usage_payload)
         return StructuredBrainResponse(
             output=_json_object(content),
             model_ref=str(payload.get("model") or model),
             gateway_ref="new-api",
             usage=usage,
             raw_response_id=str(payload["id"]) if payload.get("id") else None,
+            reported_cost=reported_cost,
+            cost_currency=(
+                str(usage_payload.get("cost_currency") or payload.get("cost_currency"))
+                if reported_cost is not None
+                else None
+            ),
         )
 
-    async def probe(self) -> dict[str, Any]:
-        payload = await self._request("GET", "models")
-        models = payload.get("data")
-        return {
-            "ok": isinstance(models, list),
-            "gateway_ref": "new-api",
-            "model_count": len(models) if isinstance(models, list) else 0,
+    async def list_models(self) -> list[str]:
+        payload = await self._request("GET", "models", require_model=False)
+        rows = payload.get("data")
+        if not isinstance(rows, list):
+            raise BrainGatewayError("模型网关返回的模型目录格式无效")
+        models = {
+            str(item.get("id")).strip()
+            for item in rows
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
         }
+        return sorted(models)
+
+    async def probe(self) -> dict[str, Any]:
+        models = await self.list_models()
+        return {
+            "ok": True,
+            "gateway_ref": "new-api",
+            "model_count": len(models),
+        }
+
+
+def _reported_cost(
+    payload: dict[str, Any],
+    usage_payload: dict[str, Any],
+) -> Decimal | None:
+    value = usage_payload.get("cost")
+    if value is None:
+        value = payload.get("cost")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None

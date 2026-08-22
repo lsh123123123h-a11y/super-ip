@@ -43,7 +43,7 @@ PlanVersion / 外部执行句柄 / Usage / Trace / 有界重试
 
 Provider 负责同类服务的可替换适配与路由；Workflow 负责需要等待、轮询、恢复或多阶段推进的可靠执行；Tool/MCP 应作为 Capability 内部调用的原子动作与资源访问入口，在出现真实内容研究/检索需求时按权限、审计和结果合同接入。`AgentExecutorPort` 仅保留给 Codex、Hermes、CLI 等拥有独立生命周期的自主外部执行器，不是核心内容能力的默认路径。
 
-New API 只作为 OpenAI-compatible 内部模型网关。星流向它发送带 JSON Schema 的结构化请求，返回内容必须再次通过内核合同验证。CCSwitch 只可辅助运维配置，不作为业务运行时依赖。
+New API 作为独立的 OpenAI-compatible 内部模型网关，继续拥有上游渠道、负载均衡、Token、倍率与网关日志等管理能力；星流不复制它的管理后台。星流只保存自己到网关的加密连接、Brain model alias 绑定，以及和 ProductionOrder / Capability 关联的调用事实。每次调用动态解析数据库配置，`.env` 仅作系统 bootstrap/fallback。星流向网关发送带 JSON Schema 的结构化请求，返回内容仍必须通过内核合同验证。CCSwitch 只可辅助运维配置，不作为业务运行时依赖。
 
 ## 3. Provider / Capability / Workflow 边界
 

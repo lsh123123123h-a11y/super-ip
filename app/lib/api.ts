@@ -70,6 +70,100 @@ export type ProviderCatalog = {
   providers: AvatarProvider[];
 };
 
+export type AIModelBinding = {
+  id?: string;
+  model_alias: string;
+  upstream_model: string;
+  enabled: boolean;
+};
+
+export type AIProvider = {
+  id: string;
+  name: string;
+  adapter_type: "new_api";
+  base_url: string;
+  secret_configured: boolean;
+  secret_hint: string;
+  capability_types: string[];
+  default_model: string;
+  timeout_seconds: number;
+  enabled: boolean;
+  status: "untested" | "ready" | "error" | "disabled";
+  config_version: number;
+  last_tested_at: string | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  bindings: AIModelBinding[];
+  request_count: number;
+  success_count: number;
+  failure_count: number;
+  total_tokens: number;
+  average_latency_ms: number | null;
+  last_invoked_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AIProviderWrite = {
+  name: string;
+  adapter_type: "new_api";
+  base_url: string;
+  api_key?: string;
+  default_model: string;
+  timeout_seconds: number;
+  enabled: boolean;
+  bindings: Array<Omit<AIModelBinding, "id">>;
+};
+
+export type AIConnectionResult = {
+  ok: boolean;
+  gateway_ref: string;
+  model_count: number;
+  models: string[];
+  latency_ms: number;
+};
+
+export type AIInvocation = {
+  id: string;
+  provider_config_id: string | null;
+  provider_name: string;
+  provider_source: string;
+  invocation_kind: string;
+  purpose: string;
+  model_alias: string;
+  requested_model: string;
+  response_model: string | null;
+  provider_request_id: string | null;
+  success: boolean | null;
+  http_status: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  cost_amount: string | number | null;
+  cost_currency: string | null;
+  latency_ms: number | null;
+  error_code: string | null;
+  error_message: string | null;
+  metadata_payload: Record<string, unknown>;
+  started_at: string;
+  finished_at: string | null;
+  created_at: string;
+};
+
+export type AIInvocationPage = {
+  summary: {
+    request_count: number;
+    success_count: number;
+    failure_count: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    average_latency_ms: number | null;
+    reported_cost: string | number | null;
+  };
+  items: AIInvocation[];
+};
+
 export type IPProfile = {
   id: string;
   name: string;
@@ -275,6 +369,55 @@ export async function retryWorkflow(workflowId: string): Promise<Workflow> {
 
 export async function listAvatarProviders(probe = true): Promise<ProviderCatalog> {
   return apiRequest<ProviderCatalog>(`/providers?probe=${probe ? "true" : "false"}`);
+}
+
+export async function listAIProviders(): Promise<AIProvider[]> {
+  return apiRequest<AIProvider[]>("/admin/ai-providers");
+}
+
+export async function createAIProvider(input: AIProviderWrite): Promise<AIProvider> {
+  return apiRequest<AIProvider>("/admin/ai-providers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateAIProvider(providerId: string, input: AIProviderWrite): Promise<AIProvider> {
+  return apiRequest<AIProvider>(`/admin/ai-providers/${providerId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function setAIProviderEnabled(providerId: string, enabled: boolean): Promise<AIProvider> {
+  return apiRequest<AIProvider>(`/admin/ai-providers/${providerId}/enabled`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export async function testAIProviderConnection(input: {
+  provider_id?: string;
+  base_url?: string;
+  api_key?: string;
+  timeout_seconds?: number;
+}): Promise<AIConnectionResult> {
+  return apiRequest<AIConnectionResult>("/admin/ai-providers/test-connection", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function testSavedAIProvider(providerId: string): Promise<AIConnectionResult> {
+  return apiRequest<AIConnectionResult>(`/admin/ai-providers/${providerId}/test`, { method: "POST" });
+}
+
+export async function listAIInvocations(limit = 50): Promise<AIInvocationPage> {
+  return apiRequest<AIInvocationPage>(`/admin/ai-providers/invocations?limit=${limit}`);
 }
 
 export async function previewAvatarRoute(input: {

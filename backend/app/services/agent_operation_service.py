@@ -258,7 +258,13 @@ async def _execute_planning(
         build_product_plan_result(
             _production_request(order, run),
             intent,
+            tenant_id=order.tenant_id,
             planning_context=dict(operation.metadata_payload.get("planning_context") or {}),
+            invocation_metadata={
+                "agent_operation_id": operation.id,
+                "production_order_id": order.id,
+                "trace_id": operation.trace_id,
+            },
         ),
         timeout=operation.timeout_seconds,
     )

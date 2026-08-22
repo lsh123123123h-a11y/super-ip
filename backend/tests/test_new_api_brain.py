@@ -92,3 +92,21 @@ async def test_new_api_probe_uses_models_endpoint() -> None:
         "gateway_ref": "new-api",
         "model_count": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_new_api_timeout_has_stable_error_code() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("upstream timeout", request=request)
+
+    adapter = NewApiBrainAdapter(
+        base_url="https://gateway.example",
+        api_key="secret-test-key",
+        default_model="reasoning-default",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(BrainGatewayError) as caught:
+        await adapter.complete_structured(_request())
+    assert caught.value.error_code == "BRAIN_GATEWAY_TIMEOUT"
+    assert str(caught.value) == "模型网关请求超时"

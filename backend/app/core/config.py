@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     model_gateway_api_key: str = ""
     model_gateway_default_model: str = ""
     model_gateway_timeout_seconds: float = 120.0
+    ai_provider_secret_key: str = ""
 
     duix_base_url: str = "http://localhost:8383/easy"
     duix_shared_data_root: Path = Path("./data/duix")

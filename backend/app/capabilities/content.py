@@ -9,6 +9,7 @@ from app.integrations.new_api_brain import (
     BrainConfigurationError,
     BrainGatewayError,
 )
+from app.integrations.managed_brain import create_managed_brain
 
 
 class ContentStrategyDraft(BaseModel):
@@ -52,7 +53,9 @@ class _BrainContentCapability:
     output_model: type[BaseModel]
     artifact_type: str
 
-    def __init__(self, brain: BrainPort) -> None:
+    model_alias = "reasoning.default"
+
+    def __init__(self, brain: BrainPort | None = None) -> None:
         self.brain = brain
 
     def output_model_for(self, context: CapabilityContext) -> type[BaseModel]:
@@ -63,8 +66,9 @@ class _BrainContentCapability:
 
     async def execute(self, context: CapabilityContext) -> CapabilityOutcome:
         output_model = self.output_model_for(context)
+        brain = self.brain or create_managed_brain(context.order.tenant_id)
         try:
-            response = await self.brain.complete_structured(
+            response = await brain.complete_structured(
                 StructuredBrainRequest(
                     purpose=self.purpose,
                     system_instruction=self.system_instruction,
@@ -76,6 +80,7 @@ class _BrainContentCapability:
                         "expected_artifact": context.step.expected_artifact,
                     },
                     output_schema=output_model.model_json_schema(),
+                    model_alias=self.model_alias,
                     metadata={
                         "production_order_id": context.order.id,
                         "plan_version_id": context.plan.id,
@@ -148,6 +153,7 @@ class ContentGenerateCapability(_BrainContentCapability):
     )
     output_model = GeneratedContentDraft
     artifact_type = "content_draft"
+    model_alias = "writing.default"
 
     def output_model_for(self, context: CapabilityContext) -> type[BaseModel]:
         if context.step.expected_artifact in {"script", "voiceover_script"}:

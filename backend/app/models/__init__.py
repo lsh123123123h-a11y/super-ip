@@ -14,6 +14,7 @@ from app.models.agent import (
     QualityEvaluation,
 )
 from app.models.assets import Asset, AssetRef, ConsentSnapshot
+from app.models.ai_provider import AIInvocation, AIModelBinding, AIProviderConfig
 from app.models.business import Campaign, ContentProject, IPProfile
 from app.models.identity import Membership, Tenant, User
 from app.models.orchestration import ProviderJob, StepAttempt, WorkflowRouteDecision, WorkflowRun, WorkflowStep
@@ -22,6 +23,9 @@ __all__ = [
     "AgentEvent",
     "AgentOperation",
     "AgentRun",
+    "AIInvocation",
+    "AIModelBinding",
+    "AIProviderConfig",
     "Artifact",
     "ArtifactVersion",
     "Asset",

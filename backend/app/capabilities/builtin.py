@@ -10,11 +10,9 @@ from app.capabilities.foundation import (
     IntentNormalizeCapability,
 )
 from app.capabilities.registry import CapabilityRegistry, _definition
-from app.integrations.brain_factory import create_configured_brain
 
 
 def register_builtin_capabilities(registry: CapabilityRegistry) -> None:
-    brain = create_configured_brain()
     registry.register(
         _definition("agent.intent.normalize", "目标结构化", ExecutionKind.inline),
         IntentNormalizeCapability(),
@@ -47,8 +45,8 @@ def register_builtin_capabilities(registry: CapabilityRegistry) -> None:
             ExecutionKind.inline,
             timeout_seconds=600,
         ),
-        ContentStrategyCapability(brain) if brain is not None else None,
-        source="builtin.brain" if brain is not None else "builtin.catalog",
+        ContentStrategyCapability(),
+        source="builtin.brain",
         metadata={"requires": ["brain"]},
     )
     registry.register(
@@ -58,8 +56,8 @@ def register_builtin_capabilities(registry: CapabilityRegistry) -> None:
             ExecutionKind.inline,
             timeout_seconds=600,
         ),
-        ContentGenerateCapability(brain) if brain is not None else None,
-        source="builtin.brain" if brain is not None else "builtin.catalog",
+        ContentGenerateCapability(),
+        source="builtin.brain",
         metadata={"requires": ["brain"]},
     )
     for key, label, kind, timeout in (

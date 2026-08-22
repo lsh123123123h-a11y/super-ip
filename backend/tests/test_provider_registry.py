@@ -18,6 +18,7 @@ class ImageProvider:
     def descriptor(self):
         return ProviderDescriptor(
             provider_id=self.provider_id,
+            adapter_version="1.0.0",
             label="Image Local",
             category="image",
             capabilities=["image.generate"],
@@ -39,6 +40,13 @@ class ImageProvider:
 
     async def probe(self):
         return {"reachable": True}
+
+
+class ImageProviderV2(ImageProvider):
+    def descriptor(self):
+        descriptor = super().descriptor()
+        descriptor.adapter_version = "2.0.0"
+        return descriptor
 
 
 def test_auto_route_keeps_duix_as_first_ready_provider() -> None:
@@ -150,3 +158,17 @@ async def test_provider_catalog_uses_generic_ready_and_keeps_avatar_alias() -> N
 
     assert catalog[0]["ready"] is True
     assert catalog[0]["render_ready"] is True
+
+
+def test_provider_registry_pins_adapter_versions() -> None:
+    registry = ProviderRegistry(Settings(), install_builtins=False)
+    registry.register(ImageProvider())
+    registry.register(ImageProviderV2())
+
+    assert registry.get_provider("image-local").descriptor().adapter_version == "2.0.0"
+    assert (
+        registry.get_provider("image-local", adapter_version="1.0.0")
+        .descriptor()
+        .adapter_version
+        == "1.0.0"
+    )

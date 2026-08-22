@@ -28,6 +28,7 @@ from app.models.agent import (
 )
 from app.models.business import IPProfile
 from app.models.assets import Asset, AssetRef
+from app.services.storage_service import asset_runtime_locator
 from app.schemas.agent import (
     ArtifactVersionRead,
     ProductionOrderCreate,
@@ -211,7 +212,7 @@ async def create_production_order(
                 f" {asset_input.media_type_prefix} 开头"
             )
         resolved_assets.append((asset, asset_input.role))
-        internal_inputs[asset_input.runtime_key] = asset.provider_path
+        internal_inputs[asset_input.runtime_key] = asset_runtime_locator(asset)
     internal_inputs["_product_key"] = payload.product_key
     order = ProductionOrder(
         tenant_id=principal.tenant_id,
@@ -480,7 +481,7 @@ async def update_production_order_inputs(
     if order.status not in {
         ProductionOrderStatus.awaiting_decision,
         ProductionOrderStatus.manual_intervention,
-        ProductionOrderStatus.failed_retryable,
+        ProductionOrderStatus.retry_wait,
     }:
         raise ValueError("当前生产单不能再补充输入")
     run = await session.scalar(
@@ -547,9 +548,7 @@ async def update_production_order_inputs(
                 f"{asset_input.input_key} 素材类型必须以"
                 f" {asset_input.media_type_prefix} 开头"
             )
-        if not asset.provider_path:
-            raise ValueError("素材尚未准备好 Provider 内部引用")
-        inputs[asset_input.runtime_key] = asset.provider_path
+        inputs[asset_input.runtime_key] = asset_runtime_locator(asset)
         resolved_assets.append(
             (asset, asset_input.role, asset_input.input_key)
         )
@@ -699,7 +698,7 @@ async def command_production_order(
                                 [
                                     AgentOperationStatus.queued.value,
                                     AgentOperationStatus.waiting.value,
-                                    AgentOperationStatus.failed_retryable.value,
+                                    AgentOperationStatus.retry_wait.value,
                                 ]
                             ),
                         )
@@ -754,8 +753,10 @@ async def command_production_order(
             for operation in operations:
                 operation.status = AgentOperationStatus.canceled.value
                 operation.finished_at = now
+                operation.fence_token += 1
                 operation.lease_owner = None
                 operation.lease_expires_at = None
+                operation.heartbeat_at = None
             order.status = ProductionOrderStatus.canceled
             run.status = AgentRunStatus.canceled
             run.stop_reason = "user_canceled"

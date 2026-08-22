@@ -37,6 +37,7 @@ class WorkflowRouteDecisionRead(BaseModel):
     requested_provider: str
     requested_execution: str
     selected_provider: str
+    selected_adapter_version: str | None
     selected_execution: str
     policy_version: str
     reason: str
@@ -49,6 +50,7 @@ class WorkflowRead(BaseModel):
 
     id: str
     task_type: str
+    workflow_definition_version: str | None
     status: WorkflowStatus
     progress: int
     input_payload: dict[str, Any]

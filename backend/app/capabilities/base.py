@@ -18,6 +18,9 @@ class CapabilityContext:
     artifacts: dict[str, dict[str, Any]] = field(default_factory=dict)
     execution_attempt: int = 1
     evaluation_feedback: list[dict[str, Any]] | None = None
+    step_execution_id: str | None = None
+    fence_token: int | None = None
+    runtime_binding_payload: dict[str, Any] = field(default_factory=dict)
 
 
 class CapabilityHandler(Protocol):

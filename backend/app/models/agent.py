@@ -39,7 +39,6 @@ class ProductionOrderStatus(str, enum.Enum):
     canceling = "canceling"
     canceled = "canceled"
     succeeded = "succeeded"
-    failed_retryable = "failed_retryable"
     failed_final = "failed_final"
     manual_intervention = "manual_intervention"
 
@@ -71,6 +70,20 @@ class ArtifactVersionStatus(str, enum.Enum):
     candidate = "candidate"
     approved = "approved"
     returned = "returned"
+    superseded = "superseded"
+
+
+class AgentStepExecutionStatus(str, enum.Enum):
+    pending = "pending"
+    running = "running"
+    waiting = "waiting"
+    awaiting_decision = "awaiting_decision"
+    evaluating = "evaluating"
+    rework_requested = "rework_requested"
+    retry_wait = "retry_wait"
+    succeeded = "succeeded"
+    failed_final = "failed_final"
+    canceled = "canceled"
     superseded = "superseded"
 
 
@@ -193,9 +206,11 @@ class AgentOperation(Base):
     )
     operation_type: Mapped[str] = mapped_column(String(32), index=True)
     operation_key: Mapped[str] = mapped_column(String(100))
+    implementation_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     idempotency_key: Mapped[str] = mapped_column(String(200), unique=True)
     executor_key: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    executor_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     external_execution_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
     trace_id: Mapped[str] = mapped_column(String(64), index=True)
     span_id: Mapped[str] = mapped_column(String(64))
@@ -217,6 +232,8 @@ class AgentOperation(Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fence_token: Mapped[int] = mapped_column(Integer, default=0)
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -243,6 +260,124 @@ class PlanVersion(Base):
         Enum(PlanVersionStatus), default=PlanVersionStatus.draft, index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentStepExecution(Base):
+    """Durable runtime state for one attempt of one Agent plan step.
+
+    AgentEvent remains the audit timeline. This row is the authoritative state
+    used for ownership, recovery, retries, evaluation and result application.
+    """
+
+    __tablename__ = "agent_step_executions"
+    __table_args__ = (
+        UniqueConstraint(
+            "plan_version_id",
+            "plan_step_key",
+            "attempt",
+            name="uq_agent_step_execution_attempt",
+        ),
+        UniqueConstraint("idempotency_key", name="uq_agent_step_execution_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_text)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    production_order_id: Mapped[str] = mapped_column(
+        ForeignKey("production_orders.id", ondelete="CASCADE"), index=True
+    )
+    agent_run_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True
+    )
+    plan_version_id: Mapped[str] = mapped_column(
+        ForeignKey("plan_versions.id", ondelete="CASCADE"), index=True
+    )
+    parent_execution_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_step_executions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    plan_step_key: Mapped[str] = mapped_column(String(100), index=True)
+    capability_key: Mapped[str] = mapped_column(String(100), index=True)
+    capability_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evaluator_key: Mapped[str] = mapped_column(String(100), index=True)
+    evaluator_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    execution_kind: Mapped[str] = mapped_column(String(32), default="inline")
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    status: Mapped[str] = mapped_column(
+        String(32), default=AgentStepExecutionStatus.pending.value, index=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(220))
+    state_origin: Mapped[str] = mapped_column(String(32), default="native")
+    input_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    runtime_binding_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    external_execution_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    external_execution_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    output_artifact_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    quality_evaluation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("quality_evaluations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    decision_request_id: Mapped[str | None] = mapped_column(
+        ForeignKey("decision_requests.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fence_token: Mapped[int] = mapped_column(Integer, default=0)
+    next_wakeup_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AgentStepArtifactInput(Base):
+    """Exact ArtifactVersion bound to a named input of a step attempt."""
+
+    __tablename__ = "agent_step_artifact_inputs"
+    __table_args__ = (
+        UniqueConstraint(
+            "step_execution_id",
+            "input_name",
+            name="uq_agent_step_artifact_input_name",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_text)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    step_execution_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_step_executions.id", ondelete="CASCADE"), index=True
+    )
+    input_name: Mapped[str] = mapped_column(String(100))
+    artifact_key: Mapped[str] = mapped_column(String(100))
+    artifact_version_id: Mapped[str] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="RESTRICT"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class DecisionRequest(Base):
@@ -353,9 +488,44 @@ class OutboxEvent(Base):
     aggregate_id: Mapped[str] = mapped_column(String(36), index=True)
     topic: Mapped[str] = mapped_column(String(100), index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
     dedupe_key: Mapped[str] = mapped_column(String(200), unique=True)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dead_lettered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ConsumedEvent(Base):
+    """Durable consumer-side deduplication and takeover state."""
+
+    __tablename__ = "consumed_events"
+    __table_args__ = (
+        UniqueConstraint("consumer_name", "event_id", name="uq_consumed_event_consumer"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_text)
+    consumer_name: Mapped[str] = mapped_column(String(100), index=True)
+    event_id: Mapped[str] = mapped_column(String(36), index=True)
+    topic: Mapped[str] = mapped_column(String(100), index=True)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="processing", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    fence_token: Mapped[int] = mapped_column(Integer, default=1)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

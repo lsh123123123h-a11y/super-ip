@@ -33,6 +33,7 @@ class DuixProvider:
     def descriptor(self) -> ProviderDescriptor:
         return ProviderDescriptor(
             provider_id=self.provider_id,
+            adapter_version="1.0.0",
             label="Duix",
             category="avatar.render",
             capabilities=["avatar.render", "audio_driven_video", "progress_polling"],

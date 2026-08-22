@@ -43,6 +43,7 @@ class OpenTalkingProvider:
             reason = "服务可探测；视频桥接器尚未启用"
         return ProviderDescriptor(
             provider_id=self.provider_id,
+            adapter_version="1.0.0",
             label="OpenTalking",
             category="avatar.render",
             capabilities=["avatar.render", "avatar.video_clone", "avatar.session.realtime"],

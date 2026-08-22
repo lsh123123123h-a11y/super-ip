@@ -1,5 +1,13 @@
 # 实施记录
 
+## 2026-08-22：Runtime Foundation 全面加固
+
+- 目标：落实外部审计指出的步骤真相、长事务、迟到写回、版本漂移、伪 DAG、Artifact latest 解析、Outbox、租户约束、状态命名和存储耦合问题。
+- 实际修改：新增 `AgentStepExecution` 与精确输入边；AgentStep、AgentOperation、WorkflowRun 全部采用短 claim + heartbeat + lease + fence；Capability/Evaluator/Workflow/Provider Adapter/Executor/Brain 路由精确版本持久化；ready set 并发执行，数字人计划允许脚本接收与已有音频检查并行；Outbox 增加 schema version、退避、死信和消费者去重；关键聚合增加复合租户 FK；统一 `retry_wait` / `canceled`；移除 `ExecutionKind.harness` 与 `bind_executor`；素材改用 storage locator 和 Provider staging adapter；内置能力补充具体 JSON Schema。
+- 验证结果：常规环境 47 项通过、11 项数据库测试按预期跳过；隔离 PostgreSQL 空库全迁移后 58/58 通过，覆盖版本精确解析、DAG 依赖、无事件历史恢复、重复 claim、租约接管及迟到结果丢弃、Evaluator 锁外执行、消费者去重、跨租户 FK 和存储 staging；`20260821_0003 → head` 的降级与再升级通过。迁移链新增 `20260822_0004` 至 `20260822_0010`，临时测试库已删除。
+- 遗留风险：真实 New API、Duix 与 OpenTalking 的生产凭据/服务连通仍需在部署环境做 smoke test；Consumer 的端到端语义仍是“至少一次 + 业务幂等/fencing”，不宣称分布式 exactly-once。
+- 可复用经验：可恢复状态必须是一等数据模型；事件不能反推当前状态；版本选择只发生在控制记录创建时；任何可能越过 lease 的结果写回都必须携带 fence。
+
 ## 2026-08-21：AI Provider 控制面与动态 New API Brain
 
 - 目标：把 New API / Brain 从日常 `.env` 配置升级为管理员可操作、动态生效并保存真实用量的 AI Provider 控制面。

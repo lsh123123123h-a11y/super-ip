@@ -1,7 +1,11 @@
 import os
+import uuid
+import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.database import SessionLocal
 from app.core.principal import Principal
@@ -31,6 +35,7 @@ from app.executors.registry import get_executor_registry
 from app.models.agent import (
     AgentEvent,
     AgentOperation,
+    AgentStepExecution,
     Artifact,
     ArtifactVersion,
     DecisionRequest,
@@ -39,10 +44,11 @@ from app.models.agent import (
     ProductionOrder,
     ProductionOrderStatus,
     QualityEvaluation,
+    ConsumedEvent,
 )
 from app.models.orchestration import WorkflowRun, WorkflowStatus
 from app.schemas.agent import ProductionOrderCreate
-from app.services.agent_runtime import run_agent_once
+from app.services.agent_runtime import _apply_outcome, run_agent_once
 from app.services.agent_operation_service import run_agent_operation_once
 from app.services.workflow_runtime import run_workflow_once
 from app.services.agent_service import (
@@ -50,6 +56,8 @@ from app.services.agent_service import (
     create_production_order,
     create_project,
 )
+from app.services.agent_step_service import claim_ready_agent_steps
+from app.worker import dispatch_envelope_once
 
 
 pytestmark = [
@@ -74,6 +82,17 @@ class PassOnSecondArtifactVersion:
             issues=[] if passed else [{"code": "TEST_REWORK_ONCE"}],
             feedback="重新生成一次目标结构化产物" if not passed else "",
         )
+
+
+class BlockingPassEvaluator:
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def evaluate(self, context):
+        self.entered.set()
+        await self.release.wait()
+        return EvaluationResult(passed=True, action=EvaluationAction.accept)
 
 
 class SuccessfulExternalExecutor:
@@ -147,6 +166,267 @@ class ContentBrain:
 
     async def probe(self):
         return {"ok": True}
+
+
+async def test_step_claim_fencing_survives_missing_event_history() -> None:
+    principal = Principal(tenant_id="fence-test-tenant", user_id="fence-test-user")
+    async with SessionLocal() as session:
+        project = await create_project(
+            session,
+            principal=principal,
+            name="Fenced Step Runtime",
+            goal="验证 durable execution state",
+            settings_payload={},
+        )
+        overview, _ = await create_production_order(
+            session,
+            principal=principal,
+            idempotency_key="fenced-step-order-v1",
+            payload=ProductionOrderCreate(
+                project_id=project.id,
+                intent_text="验证步骤执行权转移",
+                automation_mode="automatic",
+                inputs={
+                    "script": "fencing test",
+                    "audio_path": "/code/data/fence.wav",
+                    "avatar_video_path": "/code/data/fence.mp4",
+                },
+            ),
+        )
+        operation = await session.scalar(
+            select(AgentOperation).where(
+                AgentOperation.agent_run_id == overview.agent_run.id
+            )
+        )
+        operation_id = operation.id
+        order_id = overview.order.id
+        run_id = overview.agent_run.id
+
+    await run_agent_operation_once(operation_id, "planning-worker")
+    async with SessionLocal() as session:
+        await session.execute(delete(AgentEvent).where(AgentEvent.agent_run_id == run_id))
+        await session.commit()
+
+    first = (
+        await claim_ready_agent_steps(
+            order_id,
+            agent_run_id=run_id,
+            worker_id="worker-a",
+            limit=1,
+        )
+    )[0]
+    assert (
+        await claim_ready_agent_steps(
+            order_id,
+            agent_run_id=run_id,
+            worker_id="worker-b",
+            limit=1,
+        )
+    ) == []
+
+    async with SessionLocal() as session:
+        execution = await session.get(AgentStepExecution, first.execution_id)
+        execution.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    second = (
+        await claim_ready_agent_steps(
+            order_id,
+            agent_run_id=run_id,
+            worker_id="worker-b",
+            limit=1,
+        )
+    )[0]
+    assert second.execution_id == first.execution_id
+    assert second.fence_token > first.fence_token
+
+    await _apply_outcome(
+        first,
+        CapabilityOutcome(
+            status=OutcomeStatus.succeeded,
+            artifact=ArtifactDraft(
+                artifact_key="intent_spec",
+                artifact_type="intent_spec",
+                content_payload={"goal": "stale result"},
+            ),
+        ),
+    )
+    async with SessionLocal() as session:
+        execution = await session.get(AgentStepExecution, first.execution_id)
+        event_count = len(
+            list(
+                await session.scalars(
+                    select(AgentEvent.id).where(AgentEvent.agent_run_id == run_id)
+                )
+            )
+        )
+    assert execution.lease_owner == "worker-b"
+    assert execution.fence_token == second.fence_token
+    assert execution.output_artifact_version_id is None
+    assert event_count == 0
+
+
+async def test_runtime_consumer_deduplicates_successful_event() -> None:
+    event_id = str(uuid.uuid4())
+    envelope = {
+        "event_id": event_id,
+        "schema_version": 1,
+        "topic": "runtime.noop",
+        "aggregate_id": str(uuid.uuid4()),
+        "payload": {},
+    }
+
+    await dispatch_envelope_once(envelope)
+    await dispatch_envelope_once(envelope)
+
+    async with SessionLocal() as session:
+        consumed = await session.scalar(
+            select(ConsumedEvent).where(ConsumedEvent.event_id == event_id)
+        )
+    assert consumed is not None
+    assert consumed.status == "succeeded"
+    assert consumed.attempts == 1
+
+
+async def test_evaluator_runs_without_holding_step_row_lock() -> None:
+    evaluator_key = f"test.blocking-pass-{uuid.uuid4().hex[:8]}"
+    evaluator = BlockingPassEvaluator()
+    registry = get_evaluator_registry()
+    registry.register(
+        EvaluatorDefinition(
+            key=evaluator_key,
+            version="1.0.0",
+            label="阻塞评价器",
+        ),
+        evaluator,
+        source="integration-test",
+    )
+    principal = Principal(tenant_id="evaluator-lock-tenant", user_id="evaluator-lock-user")
+    async with SessionLocal() as session:
+        project = await create_project(
+            session,
+            principal=principal,
+            name="Evaluator Lock Test",
+            goal="评价器不持有 step row lock",
+            settings_payload={},
+        )
+        overview, _ = await create_production_order(
+            session,
+            principal=principal,
+            idempotency_key="evaluator-lock-order-v1",
+            payload=ProductionOrderCreate(
+                project_id=project.id,
+                intent_text="测试评价器事务边界",
+                automation_mode="automatic",
+            ),
+        )
+        operation = await session.scalar(
+            select(AgentOperation).where(
+                AgentOperation.agent_run_id == overview.agent_run.id
+            )
+        )
+        operation_id = operation.id
+        order_id = overview.order.id
+        run_id = overview.agent_run.id
+    await run_agent_operation_once(operation_id, "planning-worker")
+    async with SessionLocal() as session:
+        plan = await session.scalar(
+            select(PlanVersion).where(PlanVersion.agent_run_id == run_id)
+        )
+        payload = dict(plan.plan_payload)
+        steps = [dict(item) for item in payload["steps"]]
+        steps[0]["evaluator"] = evaluator_key
+        steps[0]["evaluator_version"] = "1.0.0"
+        plan.plan_payload = {**payload, "steps": steps}
+        execution = await session.scalar(
+            select(AgentStepExecution).where(
+                AgentStepExecution.plan_version_id == plan.id,
+                AgentStepExecution.plan_step_key == steps[0]["key"],
+            )
+        )
+        execution.evaluator_key = evaluator_key
+        execution.evaluator_version = "1.0.0"
+        await session.commit()
+    claim = (
+        await claim_ready_agent_steps(
+            order_id,
+            agent_run_id=run_id,
+            worker_id="evaluation-worker",
+            limit=1,
+        )
+    )[0]
+    task = asyncio.create_task(
+        _apply_outcome(
+            claim,
+            CapabilityOutcome(
+                status=OutcomeStatus.succeeded,
+                artifact=ArtifactDraft(
+                    artifact_key="intent_spec",
+                    artifact_type="intent_spec",
+                    content_payload={"goal": "evaluation lock boundary"},
+                ),
+            ),
+        )
+    )
+    await asyncio.wait_for(evaluator.entered.wait(), timeout=5)
+    async with SessionLocal() as session:
+        locked = await session.scalar(
+            select(AgentStepExecution)
+            .where(AgentStepExecution.id == claim.execution_id)
+            .with_for_update(nowait=True)
+        )
+        assert locked.status == "evaluating"
+        await session.rollback()
+    evaluator.release.set()
+    await task
+
+
+async def test_database_rejects_cross_tenant_aggregate_reference() -> None:
+    first = Principal(tenant_id="tenant-fk-a", user_id="tenant-fk-user-a")
+    second = Principal(tenant_id="tenant-fk-b", user_id="tenant-fk-user-b")
+    async with SessionLocal() as session:
+        first_project = await create_project(
+            session,
+            principal=first,
+            name="Tenant A",
+            goal="tenant boundary",
+            settings_payload={},
+        )
+        second_project = await create_project(
+            session,
+            principal=second,
+            name="Tenant B",
+            goal="tenant boundary",
+            settings_payload={},
+        )
+        first_order, _ = await create_production_order(
+            session,
+            principal=first,
+            idempotency_key="tenant-fk-order-a",
+            payload=ProductionOrderCreate(
+                project_id=first_project.id,
+                intent_text="tenant A order",
+            ),
+        )
+        second_order, _ = await create_production_order(
+            session,
+            principal=second,
+            idempotency_key="tenant-fk-order-b",
+            payload=ProductionOrderCreate(
+                project_id=second_project.id,
+                intent_text="tenant B order",
+            ),
+        )
+        assert first_order.order.tenant_id != second_order.order.tenant_id
+        session.add(
+            Artifact(
+                tenant_id=first.tenant_id,
+                production_order_id=second_order.order.id,
+                artifact_key="cross_tenant",
+                artifact_type="test",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await session.commit()
 
 
 async def test_agent_kernel_dispatches_avatar_through_capability_plugin() -> None:
@@ -415,6 +695,17 @@ async def test_failed_evaluation_reworks_same_step_then_continues() -> None:
         assert order is not None
         assert order.status == ProductionOrderStatus.retry_wait
         assert order.auto_rework_count == 1
+        retry_execution = await session.scalar(
+            select(AgentStepExecution)
+            .where(
+                AgentStepExecution.agent_run_id == run_id,
+                AgentStepExecution.attempt == 2,
+            )
+            .order_by(AgentStepExecution.created_at)
+        )
+        assert retry_execution is not None
+        retry_execution.next_wakeup_at = datetime.now(UTC)
+        await session.commit()
 
     await run_agent_once(order_id, run_id)
     async with SessionLocal() as session:
@@ -429,10 +720,10 @@ async def test_failed_evaluation_reworks_same_step_then_continues() -> None:
         evaluations = list(
             (
                 await session.execute(
-                    select(QualityEvaluation).where(
-                        QualityEvaluation.tenant_id == principal.tenant_id,
-                        QualityEvaluation.evaluator_key == evaluator_key,
-                    )
+                        select(QualityEvaluation).where(
+                            QualityEvaluation.tenant_id == principal.tenant_id,
+                            QualityEvaluation.evaluator_key == evaluator_key,
+                        ).order_by(QualityEvaluation.created_at)
                 )
             ).scalars()
         )
@@ -654,6 +945,8 @@ async def test_external_executor_capability_executes_through_agent_operation() -
         )
         assert operation is not None
         assert operation.plan_version_id == plan.id
+        assert operation.implementation_version == "2.0.0"
+        assert operation.executor_version == "1.0.0"
         operation_id = operation.id
 
     await run_agent_operation_once(operation_id, "integration-worker")

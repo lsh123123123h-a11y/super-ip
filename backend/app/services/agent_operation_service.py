@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.contracts import AgentIntentSpec
@@ -20,6 +20,7 @@ from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.executors.registry import get_executor_registry
 from app.integrations.new_api_brain import BrainConfigurationError, BrainGatewayError
+from app.integrations.managed_brain import resolve_brain_binding_snapshot
 from app.models.agent import (
     AgentEvent,
     AgentOperation,
@@ -34,6 +35,10 @@ from app.models.agent import (
 )
 from app.product.planning import build_product_plan_result
 from app.schemas.agent import ProductionOrderCreate
+from app.services.agent_step_service import (
+    materialize_plan_step_executions,
+    supersede_plan_step_executions,
+)
 
 
 TERMINAL_OPERATION_STATUSES = {
@@ -41,6 +46,8 @@ TERMINAL_OPERATION_STATUSES = {
     AgentOperationStatus.failed_final.value,
     AgentOperationStatus.canceled.value,
 }
+PLANNING_IMPLEMENTATION_VERSION = "2.0.0"
+EXTERNAL_OPERATION_IMPLEMENTATION_VERSION = "2.0.0"
 
 
 class PermanentOperationError(RuntimeError):
@@ -74,7 +81,9 @@ async def stage_agent_operation(
     idempotency_key: str,
     policy: ExecutionPolicy,
     metadata: dict[str, Any] | None = None,
+    implementation_version: str | None = None,
     executor_key: str | None = None,
+    executor_version: str | None = None,
     trace: TraceContext | None = None,
 ) -> tuple[AgentOperation, bool]:
     existing = await session.scalar(
@@ -89,9 +98,11 @@ async def stage_agent_operation(
         agent_run_id=run.id,
         operation_type=operation_type.value,
         operation_key=operation_key,
+        implementation_version=implementation_version,
         status=AgentOperationStatus.queued.value,
         idempotency_key=idempotency_key,
         executor_key=executor_key,
+        executor_version=executor_version,
         trace_id=trace_context.trace_id,
         span_id=trace_context.span_id,
         parent_span_id=trace_context.parent_span_id,
@@ -145,12 +156,23 @@ async def stage_planning_operation(
     planning_context: dict[str, Any] | None = None,
 ) -> tuple[AgentOperation, bool]:
     settings = get_settings()
+    try:
+        brain_binding = await resolve_brain_binding_snapshot(
+            order.tenant_id,
+            "reasoning.default",
+        )
+    except BrainConfigurationError as exc:
+        brain_binding = {
+            "model_alias": "reasoning.default",
+            "resolution_error": str(exc),
+        }
     operation, created = await stage_agent_operation(
         session,
         order=order,
         run=run,
         operation_type=AgentOperationType.planning,
         operation_key="production.plan",
+        implementation_version=PLANNING_IMPLEMENTATION_VERSION,
         idempotency_key=idempotency_key,
         policy=ExecutionPolicy(
             required_permissions=["brain.plan"],
@@ -162,6 +184,7 @@ async def stage_planning_operation(
         metadata={
             "reason": reason,
             "planning_context": planning_context or {},
+            "brain_binding": brain_binding,
         },
     )
     return operation, created
@@ -173,12 +196,15 @@ async def stage_external_executor_operation(
     order: ProductionOrder,
     run: AgentRun,
     executor_key: str,
+    executor_version: str | None = None,
     request: AgentExecutionRequest,
     idempotency_key: str,
     policy: ExecutionPolicy,
     trace: TraceContext | None = None,
 ) -> tuple[AgentOperation, bool]:
-    definition = get_executor_registry().definition(executor_key)
+    definition = get_executor_registry().definition(executor_key, executor_version)
+    if definition is None:
+        raise ValueError(f"Executor 尚未注册：{executor_key}")
     required_permissions = set(policy.required_permissions)
     if definition is not None:
         required_permissions.update(definition.required_permissions)
@@ -191,39 +217,16 @@ async def stage_external_executor_operation(
         run=run,
         operation_type=AgentOperationType.executor,
         operation_key=request.capability,
+        implementation_version=EXTERNAL_OPERATION_IMPLEMENTATION_VERSION,
         idempotency_key=idempotency_key,
         policy=effective_policy,
         metadata={"execution_request": request.model_dump(mode="json")},
         executor_key=executor_key,
+        executor_version=definition.version,
         trace=trace,
     )
     operation.plan_version_id = request.plan_version_id
     return operation, created
-
-
-async def stage_executor_operation(
-    session: AsyncSession,
-    *,
-    order: ProductionOrder,
-    run: AgentRun,
-    executor_key: str,
-    request: AgentExecutionRequest,
-    idempotency_key: str,
-    policy: ExecutionPolicy,
-    trace: TraceContext | None = None,
-) -> tuple[AgentOperation, bool]:
-    """Compatibility alias for the v1 external-executor staging API."""
-
-    return await stage_external_executor_operation(
-        session,
-        order=order,
-        run=run,
-        executor_key=executor_key,
-        request=request,
-        idempotency_key=idempotency_key,
-        policy=policy,
-        trace=trace,
-    )
 
 
 def _production_request(order: ProductionOrder, run: AgentRun) -> ProductionOrderCreate:
@@ -265,6 +268,9 @@ async def _execute_planning(
                 "production_order_id": order.id,
                 "trace_id": operation.trace_id,
             },
+            brain_binding_snapshot=dict(
+                operation.metadata_payload.get("brain_binding") or {}
+            ) or None,
         ),
         timeout=operation.timeout_seconds,
     )
@@ -284,7 +290,10 @@ async def _execute_external_executor(
 ) -> OperationExecutionResult:
     if not operation.executor_key:
         raise PermanentOperationError("Executor 操作缺少内部 executor_key")
-    executor = get_executor_registry().executor(operation.executor_key)
+    executor = get_executor_registry().executor(
+        operation.executor_key,
+        operation.executor_version,
+    )
     if executor is None:
         raise PermanentOperationError("请求的 Executor 尚未安装")
     request_payload = operation.metadata_payload.get("execution_request") or {}
@@ -370,6 +379,10 @@ async def _apply_plan_result(
         PlanVersionStatus.active,
     }:
         current.status = PlanVersionStatus.superseded
+        await supersede_plan_step_executions(
+            session,
+            plan_version_id=current.id,
+        )
     plan_payload = generated.plan.model_dump(mode="json")
     plan = PlanVersion(
         tenant_id=order.tenant_id,
@@ -388,6 +401,13 @@ async def _apply_plan_result(
     )
     session.add(plan)
     await session.flush()
+    await materialize_plan_step_executions(
+        session,
+        order=order,
+        run=run,
+        plan=plan,
+        plan_spec=generated.plan,
+    )
     operation.plan_version_id = plan.id
     await _append_operation_event(
         session,
@@ -445,7 +465,13 @@ def _safe_error_message(exc: Exception) -> str:
     return "内部操作执行异常"
 
 
-async def _record_failure(operation_id: str, exc: Exception) -> None:
+async def _record_failure(
+    operation_id: str,
+    exc: Exception,
+    *,
+    expected_worker_id: str | None = None,
+    expected_fence_token: int | None = None,
+) -> None:
     settings = get_settings()
     async with SessionLocal() as session:
         operation = await session.scalar(
@@ -455,6 +481,10 @@ async def _record_failure(operation_id: str, exc: Exception) -> None:
         )
         if operation is None or operation.status in TERMINAL_OPERATION_STATUSES:
             return
+        if expected_worker_id is not None and operation.lease_owner != expected_worker_id:
+            return
+        if expected_fence_token is not None and operation.fence_token != expected_fence_token:
+            return
         order = await session.get(ProductionOrder, operation.production_order_id)
         run = await session.get(AgentRun, operation.agent_run_id)
         permanent = isinstance(exc, PermanentOperationError)
@@ -463,6 +493,7 @@ async def _record_failure(operation_id: str, exc: Exception) -> None:
         operation.error_message = _safe_error_message(exc)
         operation.lease_owner = None
         operation.lease_expires_at = None
+        operation.heartbeat_at = None
         if permanent or exhausted:
             operation.status = AgentOperationStatus.failed_final.value
             operation.finished_at = datetime.now(UTC)
@@ -473,7 +504,7 @@ async def _record_failure(operation_id: str, exc: Exception) -> None:
                 run.stop_reason = "agent_operation_failed"
             event_type = "agent.operation.failed_final"
         else:
-            operation.status = AgentOperationStatus.failed_retryable.value
+            operation.status = AgentOperationStatus.retry_wait.value
             operation.started_at = None
             delay = settings.agent_operation_retry_base_seconds * (2 ** max(0, operation.attempt - 1))
             operation.next_wakeup_at = datetime.now(UTC) + timedelta(seconds=delay)
@@ -493,6 +524,53 @@ async def _record_failure(operation_id: str, exc: Exception) -> None:
             },
         )
         await session.commit()
+
+
+async def _renew_operation_lease(
+    operation_id: str,
+    *,
+    worker_id: str,
+    fence_token: int,
+) -> bool:
+    now = datetime.now(UTC)
+    settings = get_settings()
+    async with SessionLocal() as session:
+        result = await session.execute(
+            update(AgentOperation)
+            .where(
+                AgentOperation.id == operation_id,
+                AgentOperation.status == AgentOperationStatus.running.value,
+                AgentOperation.lease_owner == worker_id,
+                AgentOperation.fence_token == fence_token,
+            )
+            .values(
+                heartbeat_at=now,
+                lease_expires_at=now
+                + timedelta(seconds=settings.agent_operation_lease_seconds),
+            )
+        )
+        await session.commit()
+        return bool(result.rowcount)
+
+
+async def _operation_heartbeat_loop(
+    operation_id: str,
+    *,
+    worker_id: str,
+    fence_token: int,
+    stopped: asyncio.Event,
+) -> None:
+    interval = max(1.0, get_settings().agent_operation_lease_seconds / 3)
+    while not stopped.is_set():
+        try:
+            await asyncio.wait_for(stopped.wait(), timeout=interval)
+        except TimeoutError:
+            if not await _renew_operation_lease(
+                operation_id,
+                worker_id=worker_id,
+                fence_token=fence_token,
+            ):
+                return
 
 
 async def run_agent_operation_once(operation_id: str, worker_id: str = "agent-worker") -> None:
@@ -543,12 +621,11 @@ async def run_agent_operation_once(operation_id: str, worker_id: str = "agent-wo
             )
             await session.commit()
             return
+        preflight_error: Exception | None = None
         required = set(operation.required_permissions or [])
         granted = set(operation.granted_permissions or [])
         if not required.issubset(granted):
-            await session.commit()
-            await _record_failure(operation.id, PermanentOperationError("操作缺少所需权限"))
-            return
+            preflight_error = PermanentOperationError("操作缺少所需权限")
         spent = Decimal(
             await session.scalar(
                 select(func.coalesce(func.sum(AgentOperation.budget_spent), 0)).where(
@@ -559,18 +636,16 @@ async def run_agent_operation_once(operation_id: str, worker_id: str = "agent-wo
         )
         reserved = Decimal(operation.budget_reserved or 0)
         if operation.budget_limit is not None and spent + reserved > operation.budget_limit:
-            await session.commit()
-            await _record_failure(operation.id, PermanentOperationError("操作预算不足"))
-            return
+            preflight_error = PermanentOperationError("操作预算不足")
         if operation.started_at and now - operation.started_at > timedelta(seconds=operation.timeout_seconds):
-            await session.commit()
-            await _record_failure(operation.id, TimeoutError())
-            return
+            preflight_error = TimeoutError()
         if operation.status != AgentOperationStatus.waiting.value:
             operation.attempt += 1
         operation.status = AgentOperationStatus.running.value
         operation.started_at = operation.started_at or now
         operation.lease_owner = worker_id
+        operation.fence_token += 1
+        operation.heartbeat_at = now
         operation.lease_expires_at = now + timedelta(seconds=settings.agent_operation_lease_seconds)
         operation.next_wakeup_at = None
         operation.error_code = None
@@ -579,10 +654,33 @@ async def run_agent_operation_once(operation_id: str, worker_id: str = "agent-wo
             session,
             operation,
             "agent.operation.started",
-            {"attempt": operation.attempt, "worker_id": worker_id},
+            {
+                "attempt": operation.attempt,
+                "worker_id": worker_id,
+                "fence_token": operation.fence_token,
+            },
         )
+        fence_token = operation.fence_token
         await session.commit()
 
+    if preflight_error is not None:
+        await _record_failure(
+            operation_id,
+            preflight_error,
+            expected_worker_id=worker_id,
+            expected_fence_token=fence_token,
+        )
+        return
+
+    heartbeat_stopped = asyncio.Event()
+    heartbeat_task = asyncio.create_task(
+        _operation_heartbeat_loop(
+            operation_id,
+            worker_id=worker_id,
+            fence_token=fence_token,
+            stopped=heartbeat_stopped,
+        )
+    )
     try:
         if operation.operation_type == AgentOperationType.planning.value:
             result = await _execute_planning(operation, order, run)
@@ -591,13 +689,26 @@ async def run_agent_operation_once(operation_id: str, worker_id: str = "agent-wo
         else:
             raise PermanentOperationError(f"未知 AgentOperation 类型：{operation.operation_type}")
     except Exception as exc:  # noqa: BLE001
-        await _record_failure(operation_id, exc)
+        await _record_failure(
+            operation_id,
+            exc,
+            expected_worker_id=worker_id,
+            expected_fence_token=fence_token,
+        )
         return
+    finally:
+        heartbeat_stopped.set()
+        await heartbeat_task
 
     async with SessionLocal() as session:
         locked = await session.scalar(
             select(AgentOperation)
-            .where(AgentOperation.id == operation_id)
+            .where(
+                AgentOperation.id == operation_id,
+                AgentOperation.status == AgentOperationStatus.running.value,
+                AgentOperation.lease_owner == worker_id,
+                AgentOperation.fence_token == fence_token,
+            )
             .with_for_update()
         )
         if locked is None or locked.status in TERMINAL_OPERATION_STATUSES:
@@ -628,6 +739,7 @@ async def run_agent_operation_once(operation_id: str, worker_id: str = "agent-wo
         locked.metadata_payload = {**locked.metadata_payload, **result.metadata}
         locked.lease_owner = None
         locked.lease_expires_at = None
+        locked.heartbeat_at = None
         if result.status == AgentOperationStatus.waiting:
             locked.status = AgentOperationStatus.waiting.value
             locked.next_wakeup_at = datetime.now(UTC) + timedelta(
@@ -683,7 +795,7 @@ async def list_due_agent_operation_ids(limit: int = 20) -> list[str]:
                     [
                         AgentOperationStatus.queued.value,
                         AgentOperationStatus.waiting.value,
-                        AgentOperationStatus.failed_retryable.value,
+                        AgentOperationStatus.retry_wait.value,
                         AgentOperationStatus.running.value,
                     ]
                 ),

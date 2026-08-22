@@ -16,6 +16,7 @@ from app.models.agent import Project
 from app.models.orchestration import WorkflowRun, WorkflowStatus
 from app.schemas.workflows import AssetRead, AssetUploadResponse
 from app.services.identity_service import ensure_principal_records
+from app.services.storage_service import AssetLocator, LocalAssetStorage
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 settings = get_settings()
@@ -47,7 +48,9 @@ async def upload_asset(
         )
         if project is None:
             raise HTTPException(status_code=404, detail="项目不存在")
-    upload_dir = settings.duix_shared_data_root.resolve() / "tenant" / principal.tenant_id / "assets"
+    storage = LocalAssetStorage(settings)
+    storage_key = f"tenant/{principal.tenant_id}/assets/{stored_name}"
+    upload_dir = storage.resolve_path(f"tenant/{principal.tenant_id}/assets")
     upload_dir.mkdir(parents=True, exist_ok=True)
     destination = upload_dir / stored_name
 
@@ -63,8 +66,7 @@ async def upload_asset(
             digest.update(chunk)
             output.write(chunk)
 
-    storage_key = f"tenant/{principal.tenant_id}/assets/{stored_name}"
-    provider_path = f"{settings.duix_container_data_root.rstrip('/')}/{storage_key}"
+    locator = AssetLocator(backend="local", key=storage_key).as_uri()
     asset = Asset(
         id=asset_id,
         tenant_id=principal.tenant_id,
@@ -74,7 +76,9 @@ async def upload_asset(
         media_type=file.content_type or "application/octet-stream",
         size_bytes=size,
         storage_key=storage_key,
-        provider_path=provider_path,
+        storage_backend="local",
+        locator_payload={},
+        provider_path=None,
         checksum=digest.hexdigest(),
         metadata_payload={"original_suffix": suffix},
     )
@@ -87,7 +91,7 @@ async def upload_asset(
     return AssetUploadResponse(
         asset_id=asset_id,
         file_name=file.filename or stored_name,
-        provider_path=provider_path,
+        provider_path=locator,
         download_url=str(request.url_for("download_asset", asset_id=asset_id)),
         content_type=file.content_type,
     )
@@ -104,9 +108,10 @@ async def download_asset(
     )
     if asset is None:
         raise HTTPException(status_code=404, detail="素材不存在")
-    root = settings.duix_shared_data_root.resolve()
-    target = (root / asset.storage_key).resolve()
-    if not target.is_relative_to(root):
+    storage = LocalAssetStorage(settings)
+    try:
+        target = storage.resolve_path(asset.storage_key)
+    except ValueError:
         raise HTTPException(status_code=400, detail="非法文件路径")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")

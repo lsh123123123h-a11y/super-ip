@@ -14,7 +14,7 @@ class AgentOperationStatus(str, Enum):
     queued = "queued"
     running = "running"
     waiting = "waiting"
-    failed_retryable = "failed_retryable"
+    retry_wait = "retry_wait"
     succeeded = "succeeded"
     failed_final = "failed_final"
     canceled = "canceled"

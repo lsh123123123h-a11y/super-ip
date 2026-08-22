@@ -11,6 +11,38 @@ from app.product.registry import get_product_registry
 from app.schemas.agent import ProductionOrderCreate
 
 
+def pin_plan_implementation_versions(
+    plan: AgentPlanSpec,
+    *,
+    capability_registry=None,
+    evaluator_registry=None,
+) -> AgentPlanSpec:
+    """Pin every Super-IP controlled implementation used by a new PlanVersion."""
+
+    capabilities = capability_registry or get_capability_registry()
+    evaluators = evaluator_registry or get_evaluator_registry()
+    pinned_steps = []
+    for step in plan.steps:
+        capability = capabilities.resolve(step.capability)
+        if capability is None or not capabilities.is_executable(
+            step.capability,
+            capability.definition.version if capability else None,
+        ):
+            raise ValueError(f"计划引用了不可执行能力：{step.capability}")
+        evaluator = evaluators.resolve(step.evaluator)
+        if evaluator is None:
+            raise ValueError(f"计划引用了未安装评价器：{step.evaluator}")
+        pinned_steps.append(
+            step.model_copy(
+                update={
+                    "capability_version": capability.definition.version,
+                    "evaluator_version": evaluator.definition.version,
+                }
+            )
+        )
+    return plan.model_copy(update={"steps": pinned_steps})
+
+
 async def build_product_plan(
     payload: ProductionOrderCreate,
     intent: AgentIntentSpec,
@@ -27,6 +59,7 @@ async def build_product_plan_result(
     tenant_id: str = "local-tenant",
     planning_context: dict[str, Any] | None = None,
     invocation_metadata: dict[str, Any] | None = None,
+    brain_binding_snapshot: dict[str, Any] | None = None,
 ) -> PlanGenerationResult:
     product = get_product_registry().require(payload.product_key)
     capability_registry = get_capability_registry()
@@ -39,6 +72,10 @@ async def build_product_plan_result(
         alias: await brain_alias_available(tenant_id, alias)
         for alias in set(alias_requirements.values())
     }
+    if brain_binding_snapshot is not None:
+        alias_availability["reasoning.default"] = not bool(
+            brain_binding_snapshot.get("resolution_error")
+        )
     installed_capabilities = [
         item
         for item in installed_capabilities
@@ -59,15 +96,35 @@ async def build_product_plan_result(
         if planning_context:
             plan = plan.model_copy(update={"revision_context": planning_context})
         return PlanGenerationResult(
-            plan=plan,
+            plan=pin_plan_implementation_versions(
+                plan,
+                capability_registry=capability_registry,
+                evaluator_registry=get_evaluator_registry(),
+            ),
             gateway_ref="template",
         )
     context = product.planner_context(payload)
     context.update(planning_context or {})
-    brain = create_managed_brain(tenant_id)
-    return await BrainPlanner(brain).create_plan(
+    brain = create_managed_brain(
+        tenant_id,
+        (
+            {"reasoning.default": brain_binding_snapshot}
+            if brain_binding_snapshot is not None
+            else None
+        ),
+    )
+    result = await BrainPlanner(brain).create_plan(
         intent=intent,
         capabilities=installed_capabilities,
         evaluators=get_evaluator_registry().catalog(),
         context={**context, "_invocation_metadata": invocation_metadata or {}},
+    )
+    return result.model_copy(
+        update={
+            "plan": pin_plan_implementation_versions(
+                result.plan,
+                capability_registry=capability_registry,
+                evaluator_registry=get_evaluator_registry(),
+            )
+        }
     )

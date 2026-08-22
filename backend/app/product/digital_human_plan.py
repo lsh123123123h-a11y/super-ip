@@ -105,11 +105,16 @@ def build_digital_human_plan(
         if not has_audio and "audio.prepare" in available
         else "audio.evaluate"
     )
+    audio_dependencies = (
+        [script_dependency]
+        if audio_key == "audio.prepare"
+        else ["intent.normalize"]
+    )
     steps.append(
         PlanStepSpec(
             key=audio_key,
             capability=audio_key,
-            depends_on=[script_dependency],
+            depends_on=audio_dependencies,
             expected_artifact="voice_audio",
             evaluator="audio_quality_v1",
             checkpoint="policy",
@@ -120,7 +125,7 @@ def build_digital_human_plan(
         PlanStepSpec(
             key="avatar.render",
             capability="avatar.render",
-            depends_on=[audio_key],
+            depends_on=[script_dependency, audio_key],
             expected_artifact="avatar_video",
             evaluator="avatar_quality_v1",
             checkpoint="policy",

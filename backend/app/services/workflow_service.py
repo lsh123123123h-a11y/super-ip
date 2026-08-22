@@ -15,6 +15,7 @@ from app.models.orchestration import (
 )
 from app.services.provider_registry import ProviderRegistry, get_provider_registry
 from app.workflows.registry import WorkflowRegistry, get_workflow_registry
+from app.services.workflow_transitions import transition_workflow
 
 async def create_capability_workflow(
     session: AsyncSession,
@@ -34,7 +35,15 @@ async def create_capability_workflow(
     commit: bool = True,
 ) -> tuple[WorkflowRun, bool]:
     definitions = workflow_registry or get_workflow_registry()
-    definition = definitions.resolve(task_type)
+    existing = await get_workflow_by_idempotency(
+        session,
+        owner_id,
+        idempotency_key,
+    )
+    definition = definitions.resolve(
+        task_type,
+        existing.workflow_definition_version if existing else None,
+    )
     if definition is None:
         raise ValueError(f"Workflow 类型尚未注册：{task_type}")
     if definition.capability != capability:
@@ -43,11 +52,6 @@ async def create_capability_workflow(
         )
     validated_input = definition.input_model.model_validate(input_payload)
     normalized_input = validated_input.model_dump(mode="json")
-    existing = await get_workflow_by_idempotency(
-        session,
-        owner_id,
-        idempotency_key,
-    )
     if existing:
         existing_input = definition.input_model.model_validate(
             existing.input_payload
@@ -74,6 +78,7 @@ async def create_capability_workflow(
     stored_input.update(
         {
             "selected_provider": route.selected_provider,
+            "selected_adapter_version": route.selected_adapter_version,
             "selected_execution": route.selected_execution,
             "route_policy_version": route.policy_version,
         }
@@ -85,6 +90,7 @@ async def create_capability_workflow(
         production_order_id=production_order_id,
         plan_version_id=plan_version_id,
         task_type=task_type,
+        workflow_definition_version=definition.version,
         capability=capability,
         idempotency_key=idempotency_key,
         input_payload=stored_input,
@@ -110,6 +116,7 @@ async def create_capability_workflow(
             requested_provider=route.requested_provider,
             requested_execution=route.requested_execution,
             selected_provider=route.selected_provider,
+            selected_adapter_version=route.selected_adapter_version,
             selected_execution=route.selected_execution,
             policy_version=route.policy_version,
             reason=route.reason,
@@ -169,10 +176,10 @@ async def retry_workflow(
     owner_id: str,
 ) -> WorkflowRun:
     workflow = await get_workflow(session, workflow_id, owner_id)
-    if workflow.status != WorkflowStatus.failed_retryable:
+    if workflow.status != WorkflowStatus.retry_wait:
         raise ValueError("只有可重试状态的任务才能重新进入队列")
 
-    workflow.status = WorkflowStatus.queued
+    transition_workflow(workflow, WorkflowStatus.queued)
     workflow.error_code = None
     workflow.error_message = None
     failed_positions = [step.position for step in workflow.steps if step.status == StepStatus.failed]

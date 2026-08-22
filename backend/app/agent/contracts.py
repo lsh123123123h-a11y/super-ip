@@ -12,8 +12,6 @@ class ExecutionKind(str, Enum):
     inline = "inline"
     durable = "durable"
     external = "external"
-    # Legacy contract value kept for plans/extensions created before v1.1.
-    harness = "harness"
 
 
 class OutcomeStatus(str, Enum):
@@ -40,11 +38,15 @@ class AgentIntentSpec(ContractModel):
 class PlanStepSpec(ContractModel):
     key: str = Field(min_length=1, max_length=100)
     capability: str = Field(min_length=1, max_length=100)
+    capability_version: str | None = Field(default=None, min_length=1, max_length=64)
     depends_on: list[str] = Field(default_factory=list)
     expected_artifact: str = Field(min_length=1, max_length=100)
     evaluator: str = Field(min_length=1, max_length=100)
+    evaluator_version: str | None = Field(default=None, min_length=1, max_length=64)
     checkpoint: Literal["none", "policy", "final"] = "none"
     blocked_by_missing_input: bool = False
+    max_attempts: int = Field(default=3, ge=1, le=10)
+    retry_backoff_seconds: int = Field(default=10, ge=1, le=86400)
 
 
 class AgentPlanSpec(ContractModel):
@@ -63,6 +65,9 @@ class AgentPlanSpec(ContractModel):
         keys = [step.key for step in self.steps]
         if len(keys) != len(set(keys)):
             raise ValueError("计划步骤 key 必须唯一")
+        artifacts = [step.expected_artifact for step in self.steps]
+        if len(artifacts) != len(set(artifacts)):
+            raise ValueError("计划步骤 expected_artifact 必须唯一")
         known: set[str] = set()
         for step in self.steps:
             missing = set(step.depends_on) - known

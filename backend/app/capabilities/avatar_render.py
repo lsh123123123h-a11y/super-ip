@@ -5,6 +5,7 @@ from app.capabilities.base import CapabilityContext
 from app.models.orchestration import WorkflowRun, WorkflowStatus
 from app.schemas.workflows import DigitalHumanRenderRequest
 from app.services.avatar_workflow_service import create_avatar_workflow
+from app.services.workflow_transitions import transition_workflow
 
 
 ACTIVE_STATUSES = {
@@ -44,16 +45,14 @@ class AvatarRenderCapability:
                     external_execution_id=workflow.id,
                 )
             if workflow.status in {
-                WorkflowStatus.failed_retryable,
                 WorkflowStatus.failed_final,
                 WorkflowStatus.manual_intervention,
                 WorkflowStatus.canceled,
-                WorkflowStatus.cancelled,
             }:
                 return CapabilityOutcome(
                     status=OutcomeStatus.failed,
                     external_execution_id=workflow.id,
-                    retryable=workflow.status == WorkflowStatus.failed_retryable,
+                    retryable=False,
                     error_code=workflow.error_code or "CAPABILITY_EXECUTION_FAILED",
                     message=workflow.error_message or "数字人执行未完成",
                 )
@@ -132,7 +131,10 @@ class AvatarRenderCapability:
             WorkflowStatus.succeeded,
             WorkflowStatus.failed_final,
             WorkflowStatus.canceled,
-            WorkflowStatus.cancelled,
         }:
             return
-        workflow.status = WorkflowStatus.canceling
+        transition_workflow(workflow, WorkflowStatus.canceling)
+        workflow.fence_token += 1
+        workflow.lease_owner = None
+        workflow.lease_expires_at = None
+        workflow.heartbeat_at = None

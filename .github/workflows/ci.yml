@@ -1,0 +1,116 @@
+name: Production Platform Quality Gates
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, codex/production-platform-foundation]
+
+jobs:
+  platform-foundation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: xingliu_test
+          POSTGRES_USER: xingliu
+          POSTGRES_PASSWORD: xingliu
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U xingliu -d xingliu_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://xingliu:xingliu@localhost:5432/xingliu_test
+      TEST_DATABASE_URL: postgresql+asyncpg://xingliu:xingliu@localhost:5432/xingliu_test
+      REDIS_URL: redis://localhost:6379/0
+      AUTH_MODE: development
+      ASSET_STORAGE_BACKEND: local
+      TEST_S3_ENDPOINT_URL: http://localhost:9000
+      TEST_S3_BUCKET: xingliu-assets
+      TEST_S3_ACCESS_KEY_ID: xingliu-minio
+      TEST_S3_SECRET_ACCESS_KEY: xingliu-minio-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Validate single Alembic head and upgrade fresh database
+        working-directory: backend
+        run: |
+          test "$(alembic heads | wc -l)" -eq 1
+          alembic upgrade head
+          test "$(alembic current | awk '{print $1}')" = "20260822_0012"
+
+      - name: Bootstrap non-privileged runtime database role
+        run: >-
+          PGPASSWORD=xingliu psql -h localhost -U xingliu -d xingliu_test
+          -v ON_ERROR_STOP=1 -v runtime_user=xingliu_runtime
+          -v runtime_password=xingliu-runtime
+          -f postgres/ensure-runtime-role.sql
+
+      - name: Start optional MinIO integration profile
+        run: docker compose --profile object-storage up -d minio minio-init
+
+      - name: Backend unit, PostgreSQL integration, S3, and architecture tests
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://xingliu_runtime:xingliu-runtime@localhost:5432/xingliu_test
+          TEST_DATABASE_URL: postgresql+asyncpg://xingliu_runtime:xingliu-runtime@localhost:5432/xingliu_test
+          DUIX_MOCK: "true"
+          DUIX_SHARED_DATA_ROOT: ${{ runner.temp }}/duix
+          ASSET_STORAGE_ROOT: ${{ runner.temp }}/assets
+        run: pytest tests -q
+
+      - name: Phase migration downgrade and re-upgrade smoke
+        working-directory: backend
+        run: |
+          alembic downgrade 20260822_0011
+          alembic upgrade head
+
+      - name: Supported old baseline to head smoke
+        run: |
+          PGPASSWORD=xingliu psql -h localhost -U xingliu -d postgres -c "CREATE DATABASE xingliu_upgrade_test"
+          cd backend
+          DATABASE_URL=postgresql+asyncpg://xingliu:xingliu@localhost:5432/xingliu_upgrade_test alembic upgrade 20260821_0003
+          PGPASSWORD=xingliu psql -h localhost -U xingliu -d xingliu_upgrade_test -v ON_ERROR_STOP=1 -f tests/fixtures/legacy_phase2_rows.sql
+          DATABASE_URL=postgresql+asyncpg://xingliu:xingliu@localhost:5432/xingliu_upgrade_test alembic upgrade head
+          PGPASSWORD=xingliu psql -h localhost -U xingliu -d xingliu_upgrade_test -v ON_ERROR_STOP=1 -f tests/fixtures/legacy_phase2_assertions.sql
+
+      - name: Frontend lint and production build
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+
+      - name: Docker Compose validation
+        run: |
+          docker compose config --quiet
+          docker compose --profile object-storage config --quiet

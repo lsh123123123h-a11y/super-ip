@@ -87,7 +87,7 @@ jobs:
           DUIX_MOCK: "true"
           DUIX_SHARED_DATA_ROOT: ${{ runner.temp }}/duix
           ASSET_STORAGE_ROOT: ${{ runner.temp }}/assets
-        run: pytest tests -q
+        run: python -m pytest tests -q
 
       - name: Phase migration downgrade and re-upgrade smoke
         working-directory: backend

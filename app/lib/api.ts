@@ -316,12 +316,21 @@ type UploadedAsset = {
 };
 
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const authMode = process.env.NEXT_PUBLIC_AUTH_MODE ?? "development";
+  const accessToken = typeof window !== "undefined" ? window.localStorage.getItem("xingliu_access_token") : null;
+  const identityHeaders: Record<string, string> = accessToken
+    ? { Authorization: `Bearer ${accessToken}` }
+    : authMode === "development"
+      ? {
+          "X-Tenant-Id": "local-tenant",
+          "X-User-Id": "local-user",
+          "X-Owner-Id": "local-user",
+        }
+      : {};
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers: {
-      "X-Tenant-Id": "local-tenant",
-      "X-User-Id": "local-user",
-      "X-Owner-Id": "local-user",
+      ...identityHeaders,
       ...init?.headers,
     },
   });
@@ -330,6 +339,107 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(payload?.detail ?? `请求失败（${response.status}）`);
   }
   return response.json() as Promise<T>;
+}
+
+export type PlatformSnapshot = {
+  status: "ready" | "degraded";
+  components: Record<string, { status: string; [key: string]: unknown }>;
+  outbox: { backlog: number; dead_letters: number; consumer_dead_letters: number };
+};
+
+export type TenantMember = {
+  user_id: string;
+  display_name: string;
+  external_subject: string;
+  role: string;
+  status: string;
+  created_at: string;
+};
+
+export type TenantRole = { key: string; name: string; permissions: string[] };
+export type ServicePrincipal = {
+  id: string;
+  client_id: string;
+  name: string;
+  permissions: string[];
+  status: string;
+  created_at: string;
+  last_authenticated_at: string | null;
+  revoked_at: string | null;
+};
+export type UsageFact = {
+  id: string;
+  source_type: string;
+  source_id: string;
+  metric: string;
+  quantity: string | number;
+  unit: string;
+  provider_id: string | null;
+  model: string | null;
+  occurred_at: string;
+};
+export type PriceBook = {
+  id: string;
+  version: number;
+  name: string;
+  currency: string;
+  effective_from: string;
+  status: string;
+  rules: Array<{ id: string; metric: string; unit: string; unit_size: string | number; unit_price: string | number }>;
+};
+export type TenantQuota = {
+  id: string;
+  metric: string;
+  period: string;
+  hard_limit: string | number | null;
+  soft_limit: string | number | null;
+  used_quantity: string | number;
+  reserved_quantity: string | number;
+};
+export type LedgerEntry = {
+  id: string;
+  entry_type: string;
+  amount: string | number;
+  currency: string;
+  metric: string | null;
+  quantity: string | number | null;
+  source_type: string;
+  source_id: string;
+  price_book_version: number | null;
+  reverses_entry_id: string | null;
+  occurred_at: string;
+};
+
+export async function getPlatformSnapshot(): Promise<PlatformSnapshot> {
+  return apiRequest<PlatformSnapshot>("/admin/operations/platform");
+}
+
+export async function listTenantMembers(): Promise<TenantMember[]> {
+  return apiRequest<TenantMember[]>("/admin/identity/members");
+}
+
+export async function listTenantRoles(): Promise<TenantRole[]> {
+  return apiRequest<TenantRole[]>("/admin/identity/roles");
+}
+
+export async function listServicePrincipals(): Promise<ServicePrincipal[]> {
+  return apiRequest<ServicePrincipal[]>("/admin/identity/service-principals");
+}
+
+export async function listUsageFacts(): Promise<UsageFact[]> {
+  return apiRequest<UsageFact[]>("/admin/usage");
+}
+
+export async function listPriceBooks(): Promise<PriceBook[]> {
+  return apiRequest<PriceBook[]>("/admin/pricing");
+}
+
+export async function listTenantQuotas(): Promise<TenantQuota[]> {
+  return apiRequest<TenantQuota[]>("/admin/quotas");
+}
+
+export async function listLedgerEntries(): Promise<LedgerEntry[]> {
+  return apiRequest<LedgerEntry[]>("/admin/ledger");
 }
 
 export async function uploadAsset(file: File, projectId?: string): Promise<UploadedAsset> {

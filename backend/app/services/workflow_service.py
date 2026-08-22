@@ -153,10 +153,13 @@ async def get_workflow(
     session: AsyncSession,
     workflow_id: str,
     owner_id: str | None = None,
+    tenant_id: str | None = None,
 ) -> WorkflowRun:
     query = select(WorkflowRun).where(WorkflowRun.id == workflow_id)
     if owner_id is not None:
         query = query.where(WorkflowRun.owner_id == owner_id)
+    if tenant_id is not None:
+        query = query.where(WorkflowRun.tenant_id == tenant_id)
     result = await session.execute(
         query.options(
             selectinload(WorkflowRun.steps),
@@ -174,8 +177,9 @@ async def retry_workflow(
     session: AsyncSession,
     workflow_id: str,
     owner_id: str,
+    tenant_id: str | None = None,
 ) -> WorkflowRun:
-    workflow = await get_workflow(session, workflow_id, owner_id)
+    workflow = await get_workflow(session, workflow_id, owner_id, tenant_id)
     if workflow.status != WorkflowStatus.retry_wait:
         raise ValueError("只有可重试状态的任务才能重新进入队列")
 
@@ -204,7 +208,7 @@ async def retry_workflow(
         )
     )
     await session.commit()
-    return await get_workflow(session, workflow.id, owner_id)
+    return await get_workflow(session, workflow.id, owner_id, tenant_id)
 
 
 async def get_workflow_by_idempotency(
@@ -224,10 +228,17 @@ async def get_workflow_by_idempotency(
     return result.scalar_one_or_none()
 
 
-async def list_workflows(session: AsyncSession, owner_id: str, limit: int = 50) -> list[WorkflowRun]:
+async def list_workflows(
+    session: AsyncSession,
+    owner_id: str,
+    limit: int = 50,
+    tenant_id: str | None = None,
+) -> list[WorkflowRun]:
+    query = select(WorkflowRun).where(WorkflowRun.owner_id == owner_id)
+    if tenant_id is not None:
+        query = query.where(WorkflowRun.tenant_id == tenant_id)
     result = await session.execute(
-        select(WorkflowRun)
-        .where(WorkflowRun.owner_id == owner_id)
+        query
         .options(selectinload(WorkflowRun.steps), selectinload(WorkflowRun.route_decisions))
         .order_by(WorkflowRun.created_at.desc())
         .limit(limit)

@@ -1,5 +1,6 @@
 import logging
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -29,8 +30,10 @@ from app.workflows.base import (
     step_by_key,
 )
 from app.workflows.registry import WorkflowRegistry
-from app.services.storage_service import ProviderAssetStager
+from app.core.redaction import safe_error_summary
+from app.services.storage_service import ProviderAssetStager, StorageService
 from app.services.workflow_transitions import transition_workflow
+from app.services.usage_reporting import ProviderUsageReporter
 
 
 logger = logging.getLogger("xingliu.workflow.avatar")
@@ -167,6 +170,12 @@ class AvatarRenderWorkflow:
             )
 
         if provider_status.state == ProviderJobState.succeeded:
+            await ProviderUsageReporter().record_success(
+                context.session,
+                workflow=workflow,
+                job=job,
+                raw_usage=(provider_status.raw or {}).get("usage"),
+            )
             await finish_step_attempt(
                 context,
                 "avatar_render",
@@ -209,14 +218,15 @@ class AvatarRenderWorkflow:
 
     async def fail(self, context: WorkflowContext, exc: Exception) -> None:
         workflow = context.workflow
-        logger.error("workflow %s failed: %s", workflow.id, exc, exc_info=True)
+        safe_error = safe_error_summary(exc)
+        logger.error("workflow %s failed: %s", workflow.id, safe_error)
         failure_attempt = max((step.attempt for step in workflow.steps), default=0)
         exhausted = failure_attempt >= context.settings.max_workflow_attempts
         transition_workflow(workflow, (
             WorkflowStatus.failed_final if exhausted else WorkflowStatus.retry_wait
         ))
         workflow.error_code = exc.__class__.__name__
-        workflow.error_message = str(exc)
+        workflow.error_message = safe_error
         workflow.next_wakeup_at = None
         for step in workflow.steps:
             if step.status == StepStatus.running:
@@ -277,6 +287,24 @@ class AvatarRenderWorkflow:
             .limit(1)
         )
         output = workflow.output_payload or {}
+        stored = None
+        provider_artifact_path = str(output.get("artifact_path") or "")
+        if provider_artifact_path:
+            suffix = Path(provider_artifact_path).suffix or ".bin"
+            destination_key = (
+                f"tenant/{workflow.tenant_id}/artifacts/{artifact.id}/"
+                f"v{int(latest_version or 0) + 1}{suffix}"
+            )
+            storage = StorageService(context.settings)
+            stored = await ProviderAssetStager(context.settings).promote_result(
+                job.provider,
+                provider_artifact_path,
+                destination_key,
+                storage=storage,
+                media_type="video/mp4" if suffix.lower() == ".mp4" else None,
+            )
+            output.pop("artifact_path", None)
+            output["artifact_locator"] = stored.locator.as_uri()
         version = ArtifactVersion(
             tenant_id=workflow.tenant_id,
             artifact_id=artifact.id,
@@ -287,7 +315,8 @@ class AvatarRenderWorkflow:
                 "media_ref": {
                     "kind": "workflow_result",
                     "workflow_id": workflow.id,
-                    "download_available": bool(output.get("artifact_path")),
+                    "locator": stored.locator.as_uri() if stored else None,
+                    "download_available": stored is not None,
                     "remote_available": bool(output.get("result_url")),
                 }
             },
@@ -296,9 +325,16 @@ class AvatarRenderWorkflow:
                 "provider_job_id": job.id,
                 "plan_version_id": workflow.plan_version_id,
             },
+            storage_backend=stored.backend if stored else None,
+            storage_key=stored.key if stored else None,
+            media_type=stored.media_type if stored else None,
+            size_bytes=stored.size_bytes if stored else None,
+            checksum=stored.checksum if stored else None,
         )
         context.session.add(version)
         await context.session.flush()
+        output["artifact_version_id"] = version.id
+        workflow.output_payload = output
         context.session.add(
             AgentEvent(
                 tenant_id=workflow.tenant_id,

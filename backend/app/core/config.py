@@ -16,7 +16,21 @@ class Settings(BaseSettings):
     api_prefix: str = "/v1"
     cors_origins: str = "http://localhost:3000"
 
+    # Identity is an explicit adapter choice. Development headers are never
+    # consulted when this is set to ``oidc``.
+    auth_mode: str = "development"
+    oidc_issuer: str = ""
+    oidc_audience: str = ""
+    oidc_jwks_url: str = ""
+    oidc_algorithms: str = "RS256"
+    oidc_tenant_claim: str = "tenant_id"
+    oidc_roles_claim: str = "roles"
+    oidc_permissions_claim: str = "permissions"
+    oidc_auto_provision_users: bool = False
+    service_principal_pepper: str = ""
+
     database_url: str = "postgresql+asyncpg://xingliu:xingliu@localhost:5432/xingliu"
+    migration_database_url: str = ""
     auto_create_schema: bool = False
     redis_url: str = "redis://localhost:6379/0"
     workflow_queue: str = "xingliu:workflow:queue"
@@ -71,6 +85,17 @@ class Settings(BaseSettings):
 
     max_upload_bytes: int = 500 * 1024 * 1024
     asset_storage_root: Path | None = None
+    asset_storage_backend: str = "local"
+    s3_endpoint_url: str = ""
+    s3_region: str = "us-east-1"
+    s3_bucket: str = ""
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    s3_force_path_style: bool = False
+    s3_presign_expiry_seconds: int = 900
+
+    readiness_schema_revision: str = "20260822_0012"
+    log_level: str = "INFO"
 
     @property
     def allowed_origins(self) -> list[str]:
@@ -92,6 +117,37 @@ class Settings(BaseSettings):
             and self.model_gateway_api_key.strip()
             and self.model_gateway_default_model.strip()
         )
+
+    @property
+    def oidc_algorithm_list(self) -> list[str]:
+        return [item.strip() for item in self.oidc_algorithms.split(",") if item.strip()]
+
+    def production_configuration_errors(self) -> list[str]:
+        errors: list[str] = []
+        if self.environment.lower() == "production" and self.auth_mode == "development":
+            errors.append("AUTH_MODE=oidc")
+        if self.auth_mode == "oidc":
+            if not self.oidc_issuer.strip():
+                errors.append("OIDC_ISSUER")
+            if not self.oidc_audience.strip():
+                errors.append("OIDC_AUDIENCE")
+            if not self.oidc_jwks_url.strip():
+                errors.append("OIDC_JWKS_URL")
+            if not self.oidc_algorithm_list:
+                errors.append("OIDC_ALGORITHMS")
+        elif self.auth_mode != "development":
+            errors.append("AUTH_MODE")
+        if self.asset_storage_backend == "s3":
+            for name, value in (
+                ("S3_BUCKET", self.s3_bucket),
+                ("S3_ACCESS_KEY_ID", self.s3_access_key_id),
+                ("S3_SECRET_ACCESS_KEY", self.s3_secret_access_key),
+            ):
+                if not value.strip():
+                    errors.append(name)
+        elif self.asset_storage_backend != "local":
+            errors.append("ASSET_STORAGE_BACKEND")
+        return errors
 
 
 @lru_cache

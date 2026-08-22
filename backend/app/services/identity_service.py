@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.principal import Principal
-from app.models.identity import Membership, Tenant, User
+from app.models.identity import ExternalIdentity, Membership, Role, Tenant, User
 
 
 def _slug(value: str) -> str:
@@ -13,6 +13,17 @@ def _slug(value: str) -> str:
 
 
 async def ensure_principal_records(session: AsyncSession, principal: Principal) -> None:
+    if principal.auth_type != "development":
+        membership = await session.scalar(
+            select(Membership).where(
+                Membership.tenant_id == principal.tenant_id,
+                Membership.user_id == principal.user_id,
+                Membership.status == "active",
+            )
+        )
+        if membership is None:
+            raise PermissionError("生产身份不能自动创建租户成员关系")
+        return
     tenant = await session.get(Tenant, principal.tenant_id)
     if tenant is None:
         tenant = Tenant(
@@ -39,5 +50,27 @@ async def ensure_principal_records(session: AsyncSession, principal: Principal) 
         )
     )
     if membership is None:
-        session.add(Membership(tenant_id=principal.tenant_id, user_id=principal.user_id, role="owner"))
+        role_id = await session.scalar(select(Role.id).where(Role.key == "owner"))
+        session.add(
+            Membership(
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                role_id=role_id,
+                role="owner",
+            )
+        )
+    identity = await session.scalar(
+        select(ExternalIdentity).where(
+            ExternalIdentity.issuer == "development",
+            ExternalIdentity.subject == principal.user_id,
+        )
+    )
+    if identity is None:
+        session.add(
+            ExternalIdentity(
+                user_id=principal.user_id,
+                issuer="development",
+                subject=principal.user_id,
+            )
+        )
         await session.flush()

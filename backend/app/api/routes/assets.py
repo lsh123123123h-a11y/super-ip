@@ -1,10 +1,10 @@
-import hashlib
 import re
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +16,16 @@ from app.models.agent import Project
 from app.models.orchestration import WorkflowRun, WorkflowStatus
 from app.schemas.workflows import AssetRead, AssetUploadResponse
 from app.services.identity_service import ensure_principal_records
-from app.services.storage_service import AssetLocator, LocalAssetStorage
+from app.services.authorization_service import require_permission
+from app.services.storage_service import (
+    AssetLocator,
+    LocalStorageBackend,
+    ProviderAssetStager,
+    StorageLocatorError,
+    StorageObjectNotFound,
+    StorageService,
+    StorageUnavailableError,
+)
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 settings = get_settings()
@@ -32,7 +41,7 @@ async def upload_asset(
     file: UploadFile = File(...),
     project_id: str | None = None,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission("asset.write")),
 ) -> AssetUploadResponse:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
@@ -48,14 +57,13 @@ async def upload_asset(
         )
         if project is None:
             raise HTTPException(status_code=404, detail="项目不存在")
-    storage = LocalAssetStorage(settings)
     storage_key = f"tenant/{principal.tenant_id}/assets/{stored_name}"
-    upload_dir = storage.resolve_path(f"tenant/{principal.tenant_id}/assets")
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    destination = upload_dir / stored_name
+    local_backend = StorageService(settings).registry.get("local")
+    temporary_root = local_backend.root / ".uploads"  # type: ignore[attr-defined]
+    temporary_root.mkdir(parents=True, exist_ok=True)
+    destination = temporary_root / f"{asset_id}.part"
 
     size = 0
-    digest = hashlib.sha256()
     with destination.open("wb") as output:
         while chunk := await file.read(1024 * 1024):
             size += len(chunk)
@@ -63,10 +71,18 @@ async def upload_asset(
                 output.close()
                 destination.unlink(missing_ok=True)
                 raise HTTPException(status_code=413, detail="文件超过上传限制")
-            digest.update(chunk)
             output.write(chunk)
+    storage = StorageService(settings)
+    try:
+        stored = await storage.put_file(
+            storage_key, destination, media_type=file.content_type
+        )
+    except StorageUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="对象存储暂不可用") from exc
+    finally:
+        destination.unlink(missing_ok=True)
 
-    locator = AssetLocator(backend="local", key=storage_key).as_uri()
+    locator = stored.locator.as_uri()
     asset = Asset(
         id=asset_id,
         tenant_id=principal.tenant_id,
@@ -74,19 +90,19 @@ async def upload_asset(
         created_by_user_id=principal.user_id,
         file_name=file.filename or stored_name,
         media_type=file.content_type or "application/octet-stream",
-        size_bytes=size,
+        size_bytes=stored.size_bytes,
         storage_key=storage_key,
-        storage_backend="local",
+        storage_backend=stored.backend,
         locator_payload={},
         provider_path=None,
-        checksum=digest.hexdigest(),
+        checksum=stored.checksum,
         metadata_payload={"original_suffix": suffix},
     )
     session.add(asset)
     try:
         await session.commit()
     except Exception:
-        destination.unlink(missing_ok=True)
+        await storage.delete(stored.locator)
         raise
     return AssetUploadResponse(
         asset_id=asset_id,
@@ -101,27 +117,47 @@ async def upload_asset(
 async def download_asset(
     asset_id: str,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
-) -> FileResponse:
+    principal: Principal = Depends(require_permission("asset.read")),
+) -> Response:
     asset = await session.scalar(
         select(Asset).where(Asset.id == asset_id, Asset.tenant_id == principal.tenant_id)
     )
     if asset is None:
         raise HTTPException(status_code=404, detail="素材不存在")
-    storage = LocalAssetStorage(settings)
+    storage = StorageService(settings)
+    locator = AssetLocator(asset.storage_backend, asset.storage_key)
     try:
-        target = storage.resolve_path(asset.storage_key)
-    except ValueError:
+        download_url = storage.download_url(locator)
+        if download_url:
+            return RedirectResponse(download_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+        backend = storage.registry.get(locator.backend)
+        if isinstance(backend, LocalStorageBackend):
+            target = backend.resolve_path(locator.key)
+            if not target.is_file():
+                raise StorageObjectNotFound(locator.key)
+            return FileResponse(target, filename=asset.file_name, media_type=asset.media_type)
+        content = await storage.get_bytes(locator)
+        return Response(
+            content=content,
+            media_type=asset.media_type,
+            headers={
+                "Content-Disposition": (
+                    "attachment; filename*=UTF-8''" + quote(asset.file_name, safe="")
+                )
+            },
+        )
+    except StorageLocatorError as exc:
         raise HTTPException(status_code=400, detail="非法文件路径")
-    if not target.is_file():
+    except StorageObjectNotFound as exc:
         raise HTTPException(status_code=404, detail="文件不存在")
-    return FileResponse(target, filename=asset.file_name, media_type=asset.media_type)
+    except StorageUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="对象存储暂不可用") from exc
 
 
 @router.get("", response_model=list[AssetRead])
 async def list_assets(
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission("asset.read")),
     project_id: str | None = None,
 ) -> list[AssetRead]:
     query = select(Asset).where(Asset.tenant_id == principal.tenant_id)
@@ -135,11 +171,12 @@ async def list_assets(
 async def download_provider_asset(
     asset_path: str,
     session: AsyncSession = Depends(get_session),
-    owner_id: str = Header(default="local-user", alias="X-Owner-Id"),
+    principal: Principal = Depends(require_permission("asset.read")),
 ) -> FileResponse:
     result = await session.execute(
         select(WorkflowRun.output_payload).where(
-            WorkflowRun.owner_id == owner_id,
+            WorkflowRun.tenant_id == principal.tenant_id,
+            WorkflowRun.owner_id == principal.user_id,
             WorkflowRun.status == WorkflowStatus.succeeded,
         )
     )
@@ -150,9 +187,10 @@ async def download_provider_asset(
     if not authorized:
         raise HTTPException(status_code=404, detail="成片文件不存在")
 
-    root = settings.duix_shared_data_root.resolve()
-    target = (root / asset_path).resolve()
-    if not target.is_relative_to(root):
+    local = ProviderAssetStager(settings).local
+    try:
+        target = local.resolve_path(asset_path)  # type: ignore[attr-defined]
+    except StorageLocatorError:
         raise HTTPException(status_code=400, detail="非法文件路径")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="成片文件不存在")

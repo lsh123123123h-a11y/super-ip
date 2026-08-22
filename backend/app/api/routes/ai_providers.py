@@ -1,12 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
-from app.core.principal import Principal, get_principal
+from app.core.principal import Principal
 from app.core.secrets import SecretEncryptionError
 from app.integrations.new_api_brain import BrainGatewayError
-from app.models.identity import Membership
 from app.schemas.ai_providers import (
     AIInvocationPage,
     AIProviderConnectionResult,
@@ -28,28 +26,10 @@ from app.services.ai_provider_service import (
     test_saved_ai_provider,
     update_ai_provider,
 )
-from app.services.identity_service import ensure_principal_records
+from app.services.authorization_service import require_permission
 
 
 router = APIRouter(prefix="/admin/ai-providers", tags=["admin-ai-providers"])
-
-
-async def require_ai_provider_admin(
-    session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
-) -> Principal:
-    await ensure_principal_records(session, principal)
-    membership = await session.scalar(
-        select(Membership).where(
-            Membership.tenant_id == principal.tenant_id,
-            Membership.user_id == principal.user_id,
-            Membership.status == "active",
-        )
-    )
-    if membership is None or membership.role not in {"owner", "admin"}:
-        raise HTTPException(status_code=403, detail="只有租户管理员可以管理 AI Provider")
-    await session.commit()
-    return principal
 
 
 def _http_error(exc: Exception) -> HTTPException:
@@ -65,7 +45,7 @@ def _http_error(exc: Exception) -> HTTPException:
 @router.get("", response_model=list[AIProviderRead])
 async def get_ai_providers(
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_ai_provider_admin),
+    principal: Principal = Depends(require_permission("ai_provider.read")),
 ) -> list[AIProviderRead]:
     return await list_ai_providers(session, tenant_id=principal.tenant_id)
 
@@ -74,7 +54,7 @@ async def get_ai_providers(
 async def post_ai_provider(
     payload: AIProviderWrite,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_ai_provider_admin),
+    principal: Principal = Depends(require_permission("ai_provider.manage")),
 ) -> AIProviderRead:
     try:
         provider = await create_ai_provider(session, principal=principal, payload=payload)
@@ -90,7 +70,7 @@ async def put_ai_provider(
     provider_id: str,
     payload: AIProviderWrite,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_ai_provider_admin),
+    principal: Principal = Depends(require_permission("ai_provider.manage")),
 ) -> AIProviderRead:
     try:
         provider = await update_ai_provider(
@@ -111,7 +91,7 @@ async def patch_ai_provider_enabled(
     provider_id: str,
     payload: AIProviderEnabledUpdate,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_ai_provider_admin),
+    principal: Principal = Depends(require_permission("ai_provider.manage")),
 ) -> AIProviderRead:
     try:
         provider = await set_ai_provider_enabled(
@@ -131,7 +111,7 @@ async def patch_ai_provider_enabled(
 async def post_ai_provider_connection_test(
     payload: AIProviderConnectionTest,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_ai_provider_admin),
+    principal: Principal = Depends(require_permission("ai_provider.manage")),
 ) -> AIProviderConnectionResult:
     try:
         base_url, api_key, timeout_seconds = await resolve_connection_test_inputs(
@@ -160,7 +140,7 @@ async def post_ai_provider_connection_test(
 async def post_saved_ai_provider_test(
     provider_id: str,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_ai_provider_admin),
+    principal: Principal = Depends(require_permission("ai_provider.manage")),
 ) -> AIProviderConnectionResult:
     try:
         return await test_saved_ai_provider(
@@ -176,7 +156,7 @@ async def post_saved_ai_provider_test(
 async def get_ai_invocations(
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_ai_provider_admin),
+    principal: Principal = Depends(require_permission("usage.read")),
 ) -> AIInvocationPage:
     return await list_ai_invocations(
         session, tenant_id=principal.tenant_id, limit=limit
